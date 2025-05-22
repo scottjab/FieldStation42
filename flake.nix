@@ -82,6 +82,10 @@
                 doCheck = false;
                 doInstallCheck = false;
               });
+              pproxy = super.pproxy.overridePythonAttrs (old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
             };
           };
 
