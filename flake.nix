@@ -24,10 +24,12 @@
           pythonPackages = python.pkgs;
 
           # Helper function to disable tests for a package
-          disableTests = pkg: pkg.overridePythonAttrs (old: {
-            doCheck = false;
-            doInstallCheck = false;
-          });
+          disableTests =
+            pkg:
+            pkg.overridePythonAttrs (old: {
+              doCheck = false;
+              doInstallCheck = false;
+            });
 
           # Override problematic packages
           overriddenPython = python.override {
@@ -85,9 +87,11 @@
               # Core dependencies from requirements.txt
               fastapi
               ffmpeg-python
-              (disableTests (moviepy.overridePythonAttrs (old: {
-                buildInputs = (old.buildInputs or []) ++ [ ps.numpy ];
-              })))
+              (disableTests (
+                moviepy.overridePythonAttrs (old: {
+                  buildInputs = (old.buildInputs or [ ]) ++ [ ps.numpy ];
+                })
+              ))
               pyserial
               python-mpv-jsonipc
               (disableTests textual)

@@ -1,34 +1,41 @@
-{ pkgs ? import <nixpkgs> {}
-, python ? pkgs.python311
+{
+  pkgs ? import <nixpkgs> { },
+  python ? pkgs.python311,
 }:
 
 let
   pythonPackages = python.pkgs;
-  
+
   # Helper function to disable tests for a package
-  disableTests = pkg: pkg.overridePythonAttrs (old: {
-    doCheck = false;
-    doInstallCheck = false;
-  });
+  disableTests =
+    pkg:
+    pkg.overridePythonAttrs (old: {
+      doCheck = false;
+      doInstallCheck = false;
+    });
 
   # Create a Python environment with all required packages
-  pythonEnv = python.withPackages (ps: with ps; [
-    # Core dependencies from requirements.txt
-    fastapi
-    ffmpeg-python
-    (disableTests (moviepy.overridePythonAttrs (old: {
-      buildInputs = (old.buildInputs or []) ++ [ ps.numpy ];
-    })))
-    pyserial
-    python-mpv-jsonipc
-    (disableTests textual)
-    uvicorn
-    
-    # Development tools
-    black
-    flake8
-    mypy
-  ]);
+  pythonEnv = python.withPackages (
+    ps: with ps; [
+      # Core dependencies from requirements.txt
+      fastapi
+      ffmpeg-python
+      (disableTests (
+        moviepy.overridePythonAttrs (old: {
+          buildInputs = (old.buildInputs or [ ]) ++ [ ps.numpy ];
+        })
+      ))
+      pyserial
+      python-mpv-jsonipc
+      (disableTests textual)
+      uvicorn
+
+      # Development tools
+      black
+      flake8
+      mypy
+    ]
+  );
 
   # Create wrapper scripts for the Python applications
   fieldPlayer = pkgs.writeScriptBin "field_player" ''
@@ -50,7 +57,10 @@ in
   # The main package
   fieldstation42 = pkgs.symlinkJoin {
     name = "fieldstation42";
-    paths = [ fieldPlayer station ];
+    paths = [
+      fieldPlayer
+      station
+    ];
   };
 
   # Individual components
@@ -61,7 +71,7 @@ in
     buildInputs = with pkgs; [
       # Python environment with all dependencies
       pythonEnv
-      
+
       # System dependencies
       ffmpeg
       mpv
@@ -76,4 +86,4 @@ in
       export TK_LIBRARY=${pkgs.tk}/lib/tk8.6
     '';
   };
-} 
+}
