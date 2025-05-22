@@ -86,6 +86,10 @@
                 doCheck = false;
                 doInstallCheck = false;
               });
+              starlette = super.starlette.overridePythonAttrs (old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
             };
           };
 
