@@ -1,19 +1,27 @@
 { pkgs ? import <nixpkgs> {}
-, python ? pkgs.python3Full
+, python ? pkgs.python311
 }:
 
 let
   pythonPackages = python.pkgs;
   
+  # Helper function to disable tests for a package
+  disableTests = pkg: pkg.overridePythonAttrs (old: {
+    doCheck = false;
+    doInstallCheck = false;
+  });
+
   # Create a Python environment with all required packages
   pythonEnv = python.withPackages (ps: with ps; [
     # Core dependencies from requirements.txt
     fastapi
     ffmpeg-python
-    moviepy
+    (disableTests (moviepy.overridePythonAttrs (old: {
+      buildInputs = (old.buildInputs or []) ++ [ ps.numpy ];
+    })))
     pyserial
     python-mpv-jsonipc
-    textual
+    (disableTests textual)
     uvicorn
     
     # Development tools
@@ -26,6 +34,8 @@ let
   fieldPlayer = pkgs.writeScriptBin "field_player" ''
     #!${pkgs.bash}/bin/bash
     export PYTHONPATH=${./.}:$PYTHONPATH
+    export TCL_LIBRARY=${pkgs.tcl}/lib/tcl8.6
+    export TK_LIBRARY=${pkgs.tk}/lib/tk8.6
     ${pythonEnv}/bin/python ${./field_player.py} "$@"
   '';
 
@@ -55,11 +65,15 @@ in
       # System dependencies
       ffmpeg
       mpv
+      tcl
+      tk
     ];
 
     shellHook = ''
       # Set up environment variables
       export PYTHONPATH=$PWD:$PYTHONPATH
+      export TCL_LIBRARY=${pkgs.tcl}/lib/tcl8.6
+      export TK_LIBRARY=${pkgs.tk}/lib/tk8.6
     '';
   };
 } 

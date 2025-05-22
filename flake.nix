@@ -17,22 +17,80 @@
       mkFieldStation =
         {
           system,
-          python ? nixpkgs.legacyPackages.${system}.python3Full,
+          python ? nixpkgs.legacyPackages.${system}.python311Full,
         }:
         let
           pkgs = nixpkgs.legacyPackages.${system};
           pythonPackages = python.pkgs;
 
+          # Helper function to disable tests for a package
+          disableTests = pkg: pkg.overridePythonAttrs (old: {
+            doCheck = false;
+            doInstallCheck = false;
+          });
+
+          # Override problematic packages
+          overriddenPython = python.override {
+            packageOverrides = self: super: {
+              pytest-doctestplus = super.pytest-doctestplus.overridePythonAttrs (old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
+              pyerfa = super.pyerfa.overridePythonAttrs (old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
+              astropy = super.astropy.overridePythonAttrs (old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
+              imageio = super.imageio.overridePythonAttrs (old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
+              watchdog = super.watchdog.overridePythonAttrs (old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
+              werkzeug = super.werkzeug.overridePythonAttrs (old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
+              flask = super.flask.overridePythonAttrs (old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
+              httpbin = super.httpbin.overridePythonAttrs (old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
+              fastapi = super.fastapi.overridePythonAttrs (old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
+              pytest-httpbin = super.pytest-httpbin.overridePythonAttrs (old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
+              tqdm = super.tqdm.overridePythonAttrs (old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
+            };
+          };
+
           # Create a Python environment with all required packages
-          pythonEnv = python.withPackages (
+          pythonEnv = overriddenPython.withPackages (
             ps: with ps; [
               # Core dependencies from requirements.txt
               fastapi
               ffmpeg-python
-              moviepy
+              (disableTests (moviepy.overridePythonAttrs (old: {
+                buildInputs = (old.buildInputs or []) ++ [ ps.numpy ];
+              })))
               pyserial
               python-mpv-jsonipc
-              textual
+              (disableTests textual)
               uvicorn
 
               # Development tools
@@ -46,6 +104,8 @@
           fieldPlayer = pkgs.writeScriptBin "field_player" ''
             #!${pkgs.bash}/bin/bash
             export PYTHONPATH=${self}:$PYTHONPATH
+            export TCL_LIBRARY=${pkgs.tcl}/lib/tcl8.6
+            export TK_LIBRARY=${pkgs.tk}/lib/tk8.6
             ${pythonEnv}/bin/python ${self}/field_player.py "$@"
           '';
 
@@ -82,11 +142,29 @@
               # System dependencies
               ffmpeg
               mpv
+              tcl
+              tk
+              pkg-config
+              gcc
+              libffi
+              openssl
+              sqlite
+              xz
+              zlib
+              gdbm
+              readline
+              ncurses
+              bzip2
+              expat
+              mpdecimal
+              tzdata
             ];
 
             shellHook = ''
               # Set up environment variables
               export PYTHONPATH=$PWD:$PYTHONPATH
+              export TCL_LIBRARY=${pkgs.tcl}/lib/tcl8.6
+              export TK_LIBRARY=${pkgs.tk}/lib/tk8.6
             '';
           };
         };
