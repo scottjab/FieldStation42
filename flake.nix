@@ -90,6 +90,10 @@
                 doCheck = false;
                 doInstallCheck = false;
               });
+              black = super.black.overridePythonAttrs (old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
             };
           };
 
