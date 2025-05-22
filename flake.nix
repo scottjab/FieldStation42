@@ -78,6 +78,10 @@
                 doCheck = false;
                 doInstallCheck = false;
               });
+              charset-normalizer = super.charset-normalizer.overridePythonAttrs (old: {
+                doCheck = false;
+                doInstallCheck = false;
+              });
             };
           };
 
