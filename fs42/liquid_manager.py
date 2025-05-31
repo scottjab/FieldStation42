@@ -48,7 +48,7 @@ class LiquidManager(object):
                     with open(_path, "rb") as f:
                         try:
                             self.schedules[_id] = pickle.load(f)
-                        except ModuleNotFoundError as e:
+                        except ModuleNotFoundError:
                             print('\033[91m' + "Error loading schedule - this means you probably need to update your schedule format")
                             print("Please update your schedules by running station_42.py -x and then regenerating. Cheers!" + '\033[0m')
                             sys.exit(-1)
@@ -82,7 +82,7 @@ class LiquidManager(object):
     
         for _block in _blocks:
             #are we to now yet?
-            if _block.start_time > now and hasattr(_block, "sequence_key"):
+            if _block.start_time > now:
                 #does it have a sequence and is that sequence in the catalog?
                 if _block.sequence_key and _block.sequence_key in catalog.sequences:
                     #have we found it before?
