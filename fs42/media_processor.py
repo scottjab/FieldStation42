@@ -16,7 +16,7 @@ from fs42.catalog_entry import CatalogEntry
 
 
 class MediaProcessor:
-    supported_formats = ["mp4", "mpg", "mpeg", "avi", "mov", "mkv"]
+    supported_formats = ["mp4", "mpg", "mpeg", "avi", "mov", "mkv", "ts"]
 
     def process_one(fname, tag, hints, fluid=None) -> CatalogEntry:
         _l = logging.getLogger("MEDIA")
@@ -38,9 +38,12 @@ class MediaProcessor:
 
             # it might not support streams, so check with moviepy
             if duration <= 0.0:
-                video_clip = VideoFileClip(fname)
-                duration = video_clip.duration
-
+                try:
+                    video_clip = VideoFileClip(fname)
+                    duration = video_clip.duration
+                except Exception as e:
+                    _l.error(f"Error in moviepy attempting to get duration for {fname}")
+                    _l.exception(e)
             # see if both returned 0
             if duration <= 0.0:
                 _l.warning(f"Could not get a duration for tag: {tag}  file: {fname}")
