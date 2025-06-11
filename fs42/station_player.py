@@ -11,10 +11,12 @@ from python_mpv_jsonipc import MPV
 
 from fs42.guide_tk import guide_channel_runner, GuideCommands
 from fs42.reception import ReceptionStatus
-from fs42.liquid_manager import LiquidManager, PlayPoint
+from fs42.liquid_manager import LiquidManager, PlayPoint, ScheduleNotFound
+from fs42.liquid_schedule import LiquidSchedule
 from fs42.station_manager import StationManager
 
 logging.basicConfig(format="%(asctime)s %(levelname)s:%(name)s:%(message)s", level=logging.INFO)
+
 
 def check_channel_socket():
     channel_socket = StationManager().server_conf["channel_socket"]
@@ -27,7 +29,10 @@ def check_channel_socket():
         return PlayerOutcome(PlayStatus.CHANNEL_CHANGE, contents)
     return None
 
-def update_status_socket(status, network_name, channel, title=None,timestamp="%Y-%m-%dT%H:%M:%S", duration=None, file_path=None):
+
+def update_status_socket(
+    status, network_name, channel, title=None, timestamp="%Y-%m-%dT%H:%M:%S", duration=None, file_path=None
+):
     status_obj = {
         "status": status,
         "network_name": network_name,
@@ -52,10 +57,12 @@ class PlayStatus(Enum):
     SUCCESS = 3
     CHANNEL_CHANGE = 4
 
+
 class PlayerOutcome:
     def __init__(self, status=PlayStatus.SUCCESS, payload=None):
         self.status = status
         self.payload = payload
+
 
 class StationPlayer:
     def __init__(self, station_config, mpv=None):
@@ -65,8 +72,7 @@ class StationPlayer:
 
         if "start_mpv" in StationManager().server_conf:
             start_it = StationManager().server_conf["start_mpv"]
-            
-        
+
         if not mpv:
             self._l.info("Starting MPV instance")
             # command on client: mpv --input-ipc-server=/tmp/mpvsocket --idle --force-window
@@ -104,9 +110,9 @@ class StationPlayer:
             else:
                 self.mpv.vf = self.reception.filter()
 
-    def play_file(self, file_path, file_duration=None, current_time=None):
+    def play_file(self, file_path, file_duration=None, current_time=None, is_stream=False):
         try:
-            if os.path.exists(file_path):
+            if os.path.exists(file_path) or is_stream:
                 self.current_playing_file_path = file_path
                 basename = os.path.basename(file_path)
                 title, _ = os.path.splitext(basename)
@@ -115,7 +121,11 @@ class StationPlayer:
                         ts_format = StationManager().server_conf["date_time_format"]
                     else:
                         ts_format = "%Y-%m-%dT%H:%M:%S"
-                    duration = f'{str(datetime.timedelta(seconds=int(current_time)))}/{str(datetime.timedelta(seconds=int(file_duration)))}' if file_duration else "n/a"
+                    duration = (
+                        f"{str(datetime.timedelta(seconds=int(current_time)))}/{str(datetime.timedelta(seconds=int(file_duration)))}"
+                        if file_duration
+                        else "n/a"
+                    )
                     update_status_socket(
                         "playing",
                         self.station_config["network_name"],
@@ -123,19 +133,19 @@ class StationPlayer:
                         title,
                         timestamp=ts_format,
                         duration=duration,
-                        file_path=file_path
+                        file_path=file_path,
                     )
                 else:
                     self._l.warning(
                         "station_config not available in play_file, cannot update status socket with title."
                     )
 
-                self.mpv.play(file_path)
-
                 if "panscan" in self.station_config:
                     self.mpv.panscan = self.station_config["panscan"]
 
+                self.mpv.play(file_path)
                 self.mpv.wait_for_property("duration")
+
                 return True
             else:
                 self._l.error(
@@ -188,7 +198,19 @@ class StationPlayer:
 
     def play_slot(self, network_name, when):
         liquid = LiquidManager()
-        play_point = liquid.get_play_point(network_name, when)
+        try:
+            play_point = liquid.get_play_point(network_name, when)
+        except ScheduleNotFound:
+            self._l.critical("*********************Schedule Panic*********************")
+            self._l.critical(f"Schedule not found for {network_name} - attempting to generate a one-day extention")
+            schedule = LiquidSchedule(StationManager().station_by_name(network_name))
+            schedule.add_days(1)
+            self._l.warning(f"Schedule extended for {network_name} - reloading schedules now")
+            liquid.reload_schedules()
+            self._l.warning(f"Schedules reloaded - retrying play for: {network_name}")
+            #fail so we can return and try again
+            return PlayerOutcome(PlayStatus.FAILED)
+
         if play_point is None:
             self.current_playing_file_path = None
             return PlayerOutcome(PlayStatus.FAILED)
@@ -200,11 +222,17 @@ class StationPlayer:
             initial_skip = play_point.offset
 
             # iterate over the slice from index to end
-            for entry in play_point.plan[play_point.index:]:
+            for entry in play_point.plan[play_point.index :]:
                 self._l.info(f"Playing entry {entry}")
                 self._l.info(f"Initial Skip: {initial_skip}")
                 total_skip = entry.skip + initial_skip
-                self.play_file(entry.path, file_duration=entry.duration,current_time=total_skip)
+
+                is_stream = False
+
+                if hasattr(entry, "is_stream"):
+                    is_stream = entry.is_stream
+
+                self.play_file(entry.path, file_duration=entry.duration, current_time=total_skip, is_stream=is_stream)
 
                 try:
                     self.mpv.seek(total_skip)
