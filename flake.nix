@@ -17,7 +17,7 @@
       mkFieldStation =
         {
           system,
-          python ? nixpkgs.legacyPackages.${system}.python311Full,
+          python ? nixpkgs.legacyPackages.${system}.python313Full,
         }:
         let
           pkgs = nixpkgs.legacyPackages.${system};
