@@ -7,11 +7,12 @@ from fs42 import timings
 
 
 class StationManager(object):
+    # the borg singleton pattern
     __we_are_all_one = {}
+    _initialized = False
 
-    stations = []
-
-    overwatch = {
+    # private-ish
+    __overwatch = {
         "network_type": "standard",
         "schedule_increment": 30,
         "break_strategy": "standard",
@@ -20,8 +21,11 @@ class StationManager(object):
         "break_duration": 120,
     }
 
-    filechecks = ["sign_off_video", "off_air_video", "standby_image"]
+    __filechecks = ["sign_off_video", "off_air_video", "standby_image"]
 
+    # public visible - be careful
+    stations = []
+    no_catalogs = {"guide", "streaming"}
     main_config = "confs/main_config.json"
 
     # NOTE: This is the borg singleton pattern - __we_are_all_one
@@ -31,29 +35,32 @@ class StationManager(object):
         return obj
 
     def __init__(self):
-        if not len(self.stations):
-            self.server_conf = {
-                "channel_socket": "runtime/channel.socket",
-                "status_socket": "runtime/play_status.socket",
-                "day_parts": {
-                    "morning": range(6, 10),
-                    "daytime": range(10, 18),
-                    "prime": range(18, 23),
-                    "late": [23, 0, 1, 2],
-                    "overnight": range(2, 6),
-                },
-                "time_format": "%H:%M",
-                "date_time_format": "%Y-%m-%dT%H:%M:%S",
-            }
-            self._number_index = {}
-            self._name_index = {}
-            self.load_main_config()
-            self.load_json_stations()
+        self.__dict__ = self.__we_are_all_one
+        if not self._initialized:
+            self._initialized = True
+            if not len(self.stations):
+                self.server_conf = {
+                    "channel_socket": "runtime/channel.socket",
+                    "status_socket": "runtime/play_status.socket",
+                    "day_parts": {
+                        "morning": range(6, 10),
+                        "daytime": range(10, 18),
+                        "prime": range(18, 23),
+                        "late": [23, 0, 1, 2],
+                        "overnight": range(2, 6),
+                    },
+                    "time_format": "%H:%M",
+                    "date_time_format": "%Y-%m-%dT%H:%M:%S",
+                }
+                self._number_index = {}
+                self._name_index = {}
+                self.load_main_config()
+                self.load_json_stations()
 
-        for i in range(len(self.stations)):
-            station = self.stations[i]
-            if station["network_type"] == "standard":
-                self.stations[i] = SlotReader.smooth_tags(station)
+            for i in range(len(self.stations)):
+                station = self.stations[i]
+                if station["network_type"] == "standard":
+                    self.stations[i] = SlotReader.smooth_tags(station)
 
     def station_by_name(self, name):
         if name in self._name_index:
@@ -138,11 +145,11 @@ class StationManager(object):
                     try:
                         d = json.load(f)
                         # set defaults for optionals
-                        for key in StationManager.overwatch:
+                        for key in StationManager.__overwatch:
                             if key not in d["station_conf"]:
-                                d["station_conf"][key] = StationManager.overwatch[key]
+                                d["station_conf"][key] = StationManager.__overwatch[key]
 
-                        for to_check in StationManager.filechecks:
+                        for to_check in StationManager.__filechecks:
                             if to_check in d["station_conf"]:
                                 if not os.path.exists(d["station_conf"][to_check]):
                                     _l.error("*" * 60)
@@ -156,7 +163,7 @@ class StationManager(object):
                         # normalize clip shows. Can be of form: ["some_show", {tag:other_show, duration:other_duration}]
                         # want to normalize them all to the tag/duration form and convert minutes to account for break strategy
                         clip_dict = {}
-                        
+
                         for entry in d["station_conf"]["clip_shows"]:
                             clip_tag = ""
                             requested_duration = 0
@@ -180,13 +187,13 @@ class StationManager(object):
                                     _l.error(f"Can't determine tag for input {entry}")
                                     _l.error("*" * 60)
                                     exit(-1)
-                            
+
                             fill_target = 1.0
-                            #determine how much to fill with clips based on break strategy
+                            # determine how much to fill with clips based on break strategy
                             if d["station_conf"]["schedule_increment"]:
                                 fill_target = 0.95 if d["station_conf"]["schedule_increment"] else 0.73
 
-                            #change minutes to seconds and apply keep-ratio based on break strategy
+                            # change minutes to seconds and apply keep-ratio based on break strategy
                             target_seconds = (requested_duration * timings.MIN_1) * fill_target
                             clip_dict[clip_tag] = {"tags": clip_tag, "duration": target_seconds}
 

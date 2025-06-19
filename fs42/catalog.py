@@ -47,7 +47,7 @@ class ShowCatalog:
         self.tags = []
 
         self.__fluid_builder = None
-
+        self.min_gap = 10
         if rebuild_catalog:
             self.build_catalog()
         elif load:
@@ -106,7 +106,7 @@ class ShowCatalog:
             case "guide":
                 raise NotImplementedError("Guide catalog not supported yet.")
             case "streaming":
-                #just return for now
+                # just return for now
                 return
 
     def _build_single(self, tag="content"):
@@ -487,11 +487,17 @@ class ShowCatalog:
 
                     try:
                         if not self.config["commercial_free"]:
-                            candidate = self.find_commercial(remaining, when)
+                            candidate = self.find_commercial(
+                                seconds=remaining, when=when, commercial_dir=commercial_dir
+                            )
                         else:
                             candidate = self.find_bump(remaining, when, "fill")
-                    except Exception:
-                        pass
+                    except MatchingContentNotFound:
+                        if remaining > self.min_gap:
+                            self._l.warning(
+                                f"Could not find matching content for {remaining} seconds - will have a schedule gap"
+                            )
+                            # self._l.exception(e)
 
                     if candidate is not None:
                         additional_reels.append(candidate)
