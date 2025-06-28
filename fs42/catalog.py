@@ -47,7 +47,7 @@ class ShowCatalog:
         self.tags = []
 
         self.__fluid_builder = None
-        self.min_gap = 10
+        self.min_gap = 3
         if rebuild_catalog:
             self.build_catalog()
         elif load:
@@ -313,7 +313,8 @@ class ShowCatalog:
         for tag in self.clip_index:
             if tag not in ["sign_off", "off_air"]:
                 for item in self.clip_index[tag]:
-                    if item.duration < 1:
+                    
+                    if hasattr(item, 'duration') and item.duration < 1:
                         too_short.append(item)
 
         if len(too_short):
@@ -474,11 +475,17 @@ class ShowCatalog:
         blocks = []
         keep_going = True
         while remaining and keep_going:
-            block = self.make_reel_block(
-                when, use_bumpers, target_break_duration, commercial_dir=commercial_dir, bump_dir=bump_dir
-            )
+            block = None
+            try:
+                block = self.make_reel_block(
+                    when, use_bumpers, target_break_duration, commercial_dir=commercial_dir, bump_dir=bump_dir
+                )
+            except MatchingContentNotFound:
+                self._l.debug(
+                    f"Could not find matching content for {remaining} seconds - will attempt to fill with BRB"
+                )                
 
-            if (remaining - block.duration) > 0:
+            if block and (remaining - block.duration) > 0:
                 remaining -= block.duration
                 blocks.append(block)
 
@@ -492,8 +499,7 @@ class ShowCatalog:
 
         # discard that block and fill using the tightest technique possible
         additional_reels = []
-        gap_count = 0
-        total_gap = 0
+
         while remaining and keep_going:
             candidate = None
             try:
@@ -503,20 +509,20 @@ class ShowCatalog:
                     candidate = self.find_bump(remaining, when, "fill")
             except MatchingContentNotFound:
                 if remaining > self.min_gap:
-                    #self._l.warning(f"Could not find matching content for {remaining} seconds")
-                    gap_count += 1
-                    total_gap += remaining
-
+                    self._l.debug(
+                        f"Could not find matching content for {remaining} seconds - will attempt to fill with BRB"
+                    )
+                   
             if candidate:
                 additional_reels.append(candidate)
                 remaining -= candidate.duration
             else:
+                # If BRB is enabled, we'll use that to fill the remaining gap
+                if remaining > self.min_gap and "be_right_back_media" in self.config:
+                    brb = CatalogEntry(self.config["be_right_back_media"], duration=remaining, tag="brb")
+                    additional_reels.append(brb)
                 keep_going = False
                 remaining = 0
-
-        if gap_count:
-            avg_gap = round(total_gap / gap_count, 3)
-            self._l.warning(f"Gaps at end of {gap_count} slots - average {avg_gap} seconds long.")
 
         blocks.append(ReelBlock(None, additional_reels, None))
 
