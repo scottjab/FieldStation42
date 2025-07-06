@@ -273,7 +273,7 @@ class WebFieldPlayer:
                     "name": self.manager.stations[self.current_channel_index]["network_name"],
                     "title": self.player.get_current_title() or "",
                     "stream_url": self.player.get_current_stream_url() or "",
-                    "reception_quality": self.reception.quality
+                    "reception_quality": 1.0 - self.reception.chaos
                 }
                 self.logger.debug(f"Status: {status}")
                 return status
@@ -632,7 +632,7 @@ class WebFieldPlayer:
             "name": channel_conf["network_name"],
             "title": "",
             "stream_url": "",
-            "reception_quality": self.reception.quality
+            "reception_quality": 1.0 - self.reception.chaos
         }
         
         for websocket in self.websocket_connections:
