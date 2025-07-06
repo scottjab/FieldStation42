@@ -66,10 +66,6 @@
                 doCheck = false;
                 doInstallCheck = false;
               });
-              fastapi = super.fastapi.overridePythonAttrs (old: {
-                doCheck = false;
-                doInstallCheck = false;
-              });
               pytest-httpbin = super.pytest-httpbin.overridePythonAttrs (old: {
                 doCheck = false;
                 doInstallCheck = false;
@@ -86,10 +82,6 @@
                 doCheck = false;
                 doInstallCheck = false;
               });
-              starlette = super.starlette.overridePythonAttrs (old: {
-                doCheck = false;
-                doInstallCheck = false;
-              });
               black = super.black.overridePythonAttrs (old: {
                 doCheck = false;
                 doInstallCheck = false;
@@ -101,7 +93,6 @@
           pythonEnv = overriddenPython.withPackages (
             ps: with ps; [
               # Core dependencies from requirements.txt
-              fastapi
               ffmpeg-python
               (disableTests (
                 moviepy.overridePythonAttrs (old: {
@@ -111,7 +102,6 @@
               pyserial
               python-mpv-jsonipc
               (disableTests textual)
-              uvicorn
 
               # Development tools
               black
@@ -119,6 +109,16 @@
               mypy
             ]
           );
+
+          # Build the Go web field player binary
+          webFieldPlayerGo = pkgs.buildGoApplication {
+            pname = "web-field-player";
+            version = "1.0.0";
+            src = self;
+            go = pkgs.go;
+            modules = ./go.mod;
+            doCheck = false;
+          };
 
           # Create wrapper scripts for the Python applications
           fieldPlayer = pkgs.writeScriptBin "field_player" ''
@@ -135,10 +135,10 @@
             ${pythonEnv}/bin/python ${self}/station_42.py "$@"
           '';
 
+          # Go web field player binary wrapper
           webFieldPlayer = pkgs.writeScriptBin "web_field_player" ''
             #!${pkgs.bash}/bin/bash
-            export PYTHONPATH=${self}:$PYTHONPATH
-            ${pythonEnv}/bin/python ${self}/web_field_player.py "$@"
+            ${webFieldPlayerGo}/bin/web-field-player "$@"
           '';
         in
         {
@@ -146,6 +146,7 @@
             field-player = fieldPlayer;
             station = station;
             web-field-player = webFieldPlayer;
+            web-field-player-go = webFieldPlayerGo;
             default = station;
           };
 
@@ -169,6 +170,9 @@
             buildInputs = with pkgs; [
               # Python environment with all dependencies
               pythonEnv
+
+              # Go for development
+              go
 
               # System dependencies
               ffmpeg

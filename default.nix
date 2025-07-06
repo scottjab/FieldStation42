@@ -18,7 +18,6 @@ let
   pythonEnv = python.withPackages (
     ps: with ps; [
       # Core dependencies from requirements.txt
-      fastapi
       ffmpeg-python
       (disableTests (
         moviepy.overridePythonAttrs (old: {
@@ -28,7 +27,6 @@ let
       pyserial
       python-mpv-jsonipc
       (disableTests textual)
-      uvicorn
 
       # Development tools
       black
@@ -36,6 +34,16 @@ let
       mypy
     ]
   );
+
+  # Build the Go web field player binary
+  webFieldPlayerGo = pkgs.buildGoApplication {
+    pname = "web-field-player";
+    version = "1.0.0";
+    src = ./.;
+    go = pkgs.go;
+    modules = ./go.mod;
+    doCheck = false;
+  };
 
   # Create wrapper scripts for the Python applications
   fieldPlayer = pkgs.writeScriptBin "field_player" ''
@@ -51,6 +59,12 @@ let
     export PYTHONPATH=${./.}:$PYTHONPATH
     ${pythonEnv}/bin/python ${./station_42.py} "$@"
   '';
+
+  # Go web field player binary wrapper
+  webFieldPlayer = pkgs.writeScriptBin "web_field_player" ''
+    #!${pkgs.bash}/bin/bash
+    ${webFieldPlayerGo}/bin/web-field-player "$@"
+  '';
 in
 
 {
@@ -60,17 +74,21 @@ in
     paths = [
       fieldPlayer
       station
+      webFieldPlayer
     ];
   };
 
   # Individual components
-  inherit fieldPlayer station;
+  inherit fieldPlayer station webFieldPlayer webFieldPlayerGo;
 
   # Development environment
   devShell = pkgs.mkShell {
     buildInputs = with pkgs; [
       # Python environment with all dependencies
       pythonEnv
+
+      # Go for development
+      go
 
       # System dependencies
       ffmpeg
