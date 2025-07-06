@@ -59,9 +59,23 @@ let
     ${pythonEnv}/bin/python ${./station_42.py} "$@"
   '';
 
-  # Go web field player binary wrapper
+  # Schedule conversion script
+  convertSchedules = pkgs.writeScriptBin "convert_schedules" ''
+    #!${pkgs.bash}/bin/bash
+    export PYTHONPATH=${./.}:$PYTHONPATH
+    ${pythonEnv}/bin/python ${./convert_schedules.py} "$@"
+  '';
+
+  # Go web field player binary wrapper with conversion
   webFieldPlayer = pkgs.writeScriptBin "web_field_player" ''
     #!${pkgs.bash}/bin/bash
+    # Convert pickle schedules to JSON first
+    echo "Converting pickle schedules to JSON..."
+    export PYTHONPATH=${./.}:$PYTHONPATH
+    ${pythonEnv}/bin/python ${./convert_schedules.py}
+    
+    # Start the web player
+    echo "Starting web field player..."
     ${webFieldPlayerGo}/bin/fieldstation42 "$@"
   '';
 in
@@ -73,12 +87,13 @@ in
     paths = [
       fieldPlayer
       station
+      convertSchedules
       webFieldPlayer
     ];
   };
 
   # Individual components
-  inherit fieldPlayer station webFieldPlayer webFieldPlayerGo;
+  inherit fieldPlayer station convertSchedules webFieldPlayer webFieldPlayerGo;
 
   # Development environment
   devShell = pkgs.mkShell {

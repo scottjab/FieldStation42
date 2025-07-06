@@ -27,6 +27,8 @@ type StationConfig struct {
 	NetworkType   string `json:"network_type"`
 	ContentDir    string `json:"content_dir,omitempty"`
 	StandbyImage  string `json:"standby_image,omitempty"`
+	CatalogPath   string `json:"catalog_path,omitempty"`
+	SchedulePath  string `json:"schedule_path,omitempty"`
 }
 
 type ServerConfig struct {
@@ -88,6 +90,7 @@ type WebStationPlayer struct {
 	skipReceptionCheck     bool
 	currentProcess         *exec.Cmd
 	logger                 *log.Logger
+	catalog                *ShowCatalog
 }
 
 type WebFieldPlayer struct {
@@ -1060,12 +1063,19 @@ func (w *WebFieldPlayer) shutdown() {
 
 // WebStationPlayer methods
 func NewWebStationPlayer(stationConfig *StationConfig, logger *log.Logger) *WebStationPlayer {
-	return &WebStationPlayer{
+	player := &WebStationPlayer{
 		stationConfig:      stationConfig,
 		receptionQuality:   1.0,
 		skipReceptionCheck: false,
 		logger:             logger,
 	}
+
+	// Load the catalog for this station
+	if err := player.loadCatalog(); err != nil {
+		logger.Printf("Warning: failed to load catalog: %v", err)
+	}
+
+	return player
 }
 
 func (p *WebStationPlayer) shutdown() {
@@ -1117,6 +1127,12 @@ func (p *WebStationPlayer) playFile(filePath string, fileDuration *int, currentT
 
 func (p *WebStationPlayer) getCurrentTitle() string {
 	if p.currentPlayingFilePath != "" {
+		// Try to get title from catalog first
+		if catalogEntry := p.getCatalogEntryByPath(p.currentPlayingFilePath); catalogEntry != nil {
+			return catalogEntry.Title
+		}
+
+		// Fall back to filename-based title
 		basename := filepath.Base(p.currentPlayingFilePath)
 		return strings.TrimSuffix(basename, filepath.Ext(basename))
 	}
@@ -1184,45 +1200,141 @@ func (p *WebStationPlayer) playSlot(networkName string, when time.Time) *PlayerO
 	return &PlayerOutcome{Status: PlayStatusSuccess}
 }
 
-// getPlayPointFromSchedule implements a simplified scheduling system in Go
+// getPlayPointFromSchedule reads the JSON schedule file
 func (p *WebStationPlayer) getPlayPointFromSchedule(networkName string, when time.Time) (*PlayPoint, error) {
 	// Use the current station configuration
 	if p.stationConfig == nil {
 		return nil, fmt.Errorf("no station configuration available")
 	}
 
-	// For now, implement a simple content selection based on time and content directory
-	// This is a simplified version that just picks content from the content directory
-	if p.stationConfig.ContentDir != "" {
-		contentFiles, err := p.getContentFiles(p.stationConfig.ContentDir)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get content files: %v", err)
-		}
+	p.logger.Printf("Getting play point for station: %s from JSON schedule", networkName)
 
-		if len(contentFiles) > 0 {
-			// Simple round-robin selection based on time
-			index := int(when.Unix()/3600) % len(contentFiles) // Change every hour
-			selectedFile := contentFiles[index]
+	// Use JSON schedule file path
+	jsonSchedulePath := fmt.Sprintf("json_schedules/%s_schedule.json", networkName)
 
-			// Create a simple play point with the selected content
-			playPoint := &PlayPoint{
-				Index:  0,
-				Offset: 0,
-				Plan: []PlayEntry{
-					{
-						Path:     selectedFile,
-						Duration: 3600, // Assume 1 hour duration
-						Skip:     0,
-						IsStream: false,
-					},
-				},
-			}
+	// Check if JSON schedule file exists
+	if _, err := os.Stat(jsonSchedulePath); os.IsNotExist(err) {
+		p.logger.Printf("JSON schedule file not found: %s", jsonSchedulePath)
+		p.logger.Printf("Run 'convert_schedules' to convert pickle files to JSON format")
+		return p.getPlaceholderPlayPoint(), nil
+	}
 
-			return playPoint, nil
+	// Read and parse the JSON schedule file
+	scheduleData, err := p.readJSONScheduleFile(jsonSchedulePath, when)
+	if err != nil {
+		p.logger.Printf("Error reading JSON schedule file: %v", err)
+		return p.getPlaceholderPlayPoint(), nil
+	}
+
+	return scheduleData, nil
+}
+
+// readJSONScheduleFile reads and parses the JSON schedule file
+func (p *WebStationPlayer) readJSONScheduleFile(jsonSchedulePath string, when time.Time) (*PlayPoint, error) {
+	// Read the JSON file
+	data, err := os.ReadFile(jsonSchedulePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read JSON schedule file: %v", err)
+	}
+
+	// Parse JSON schedule
+	var jsonBlocks []JSONScheduleBlock
+	if err := json.Unmarshal(data, &jsonBlocks); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON schedule: %v", err)
+	}
+
+	p.logger.Printf("Loaded %d schedule blocks from JSON", len(jsonBlocks))
+
+	// Find the block that contains the requested time
+	for _, block := range jsonBlocks {
+		startTime := p.parseJSONDateTime(block.StartTime)
+		endTime := p.parseJSONDateTime(block.EndTime)
+
+		if when.After(startTime) && when.Before(endTime) {
+			return p.createPlayPointFromJSONBlock(block, when)
 		}
 	}
 
-	// If no content found, return a placeholder
+	p.logger.Printf("No schedule block found for time %v", when)
+	return p.getPlaceholderPlayPoint(), nil
+}
+
+// JSONScheduleBlock represents a schedule block from JSON
+type JSONScheduleBlock struct {
+	StartTime JSONDateTime    `json:"start_time"`
+	EndTime   JSONDateTime    `json:"end_time"`
+	Title     string          `json:"title"`
+	Plan      []JSONPlanEntry `json:"plan"`
+}
+
+// JSONPlanEntry represents a plan entry from JSON
+type JSONPlanEntry struct {
+	Path     string `json:"path"`
+	Duration int    `json:"duration"`
+	Skip     int    `json:"skip"`
+	IsStream bool   `json:"is_stream"`
+}
+
+// JSONDateTime represents datetime from JSON
+type JSONDateTime struct {
+	Type  string `json:"__type__"`
+	Value string `json:"value"`
+}
+
+// parseJSONDateTime parses JSON datetime format
+func (p *WebStationPlayer) parseJSONDateTime(jsonDT JSONDateTime) time.Time {
+	if jsonDT.Type == "datetime" {
+		if parsed, err := time.Parse(time.RFC3339, jsonDT.Value); err == nil {
+			return parsed
+		}
+	}
+	// Fallback to current time
+	return time.Now().Truncate(time.Hour)
+}
+
+// createPlayPointFromJSONBlock creates a PlayPoint from JSON schedule block
+func (p *WebStationPlayer) createPlayPointFromJSONBlock(block JSONScheduleBlock, when time.Time) (*PlayPoint, error) {
+	startTime := p.parseJSONDateTime(block.StartTime)
+
+	// Find the appropriate plan entry
+	index := 0
+	currentTime := startTime
+
+	for i, entry := range block.Plan {
+		entryEndTime := currentTime.Add(time.Duration(entry.Duration) * time.Second)
+		if when.Before(entryEndTime) {
+			index = i
+			break
+		}
+		currentTime = entryEndTime
+	}
+
+	// Calculate the offset within the current entry
+	entryOffset := int(when.Sub(currentTime).Seconds())
+	if entryOffset < 0 {
+		entryOffset = 0
+	}
+
+	playPoint := &PlayPoint{
+		Index:  index,
+		Offset: entryOffset,
+		Plan:   make([]PlayEntry, len(block.Plan)),
+	}
+
+	// Convert JSON plan entries to PlayEntry
+	for i, entry := range block.Plan {
+		playPoint.Plan[i] = PlayEntry(entry)
+	}
+
+	p.logger.Printf("Created play point from JSON: index=%d, offset=%d, plan_entries=%d",
+		playPoint.Index, playPoint.Offset, len(playPoint.Plan))
+
+	return playPoint, nil
+}
+
+// getPlaceholderPlayPoint returns a placeholder play point when scheduling fails
+func (p *WebStationPlayer) getPlaceholderPlayPoint() *PlayPoint {
+	p.logger.Printf("Using placeholder content for station %s", p.stationConfig.NetworkName)
 	return &PlayPoint{
 		Index:  0,
 		Offset: 0,
@@ -1234,32 +1346,7 @@ func (p *WebStationPlayer) getPlayPointFromSchedule(networkName string, when tim
 				IsStream: false,
 			},
 		},
-	}, nil
-}
-
-// getContentFiles scans a content directory for video files
-func (p *WebStationPlayer) getContentFiles(contentDir string) ([]string, error) {
-	var files []string
-
-	entries, err := os.ReadDir(contentDir)
-	if err != nil {
-		return nil, err
 	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			name := entry.Name()
-			// Check for common video file extensions
-			if strings.HasSuffix(strings.ToLower(name), ".mp4") ||
-				strings.HasSuffix(strings.ToLower(name), ".avi") ||
-				strings.HasSuffix(strings.ToLower(name), ".mkv") ||
-				strings.HasSuffix(strings.ToLower(name), ".mov") {
-				files = append(files, filepath.Join(contentDir, name))
-			}
-		}
-	}
-
-	return files, nil
 }
 
 // Utility functions
@@ -1396,4 +1483,145 @@ func mainLoop(webPlayer *WebFieldPlayer, logger *log.Logger) {
 			stuckTimer = 0
 		}
 	}
+}
+
+// ShowCatalog represents the catalog structure from Python
+type ShowCatalog struct {
+	Version   float64                `pickle:"version"`
+	ClipIndex map[string]interface{} `pickle:"clip_index"`
+	Sequences map[string]interface{} `pickle:"sequences"`
+}
+
+// CatalogEntry represents a catalog entry from Python
+type CatalogEntry struct {
+	Path     string   `pickle:"path"`
+	Title    string   `pickle:"title"`
+	Duration float64  `pickle:"duration"`
+	Tag      string   `pickle:"tag"`
+	Count    int      `pickle:"count"`
+	Hints    []string `pickle:"hints"`
+}
+
+// loadCatalog loads the JSON catalog file for the station
+func (p *WebStationPlayer) loadCatalog() error {
+	if p.stationConfig == nil {
+		return fmt.Errorf("no station configuration available")
+	}
+
+	// Use JSON catalog file path
+	jsonCatalogPath := fmt.Sprintf("json_schedules/%s_catalog.json", p.stationConfig.NetworkName)
+
+	// Check if JSON catalog file exists
+	if _, err := os.Stat(jsonCatalogPath); os.IsNotExist(err) {
+		p.logger.Printf("JSON catalog file not found: %s", jsonCatalogPath)
+		p.logger.Printf("Run 'convert_schedules' to convert pickle files to JSON format")
+		return fmt.Errorf("JSON catalog file not found: %s (run 'convert_schedules' to convert)", jsonCatalogPath)
+	}
+
+	// Read the JSON catalog file
+	data, err := os.ReadFile(jsonCatalogPath)
+	if err != nil {
+		return fmt.Errorf("failed to read JSON catalog file: %v", err)
+	}
+
+	// Parse the JSON catalog
+	var jsonCatalog JSONShowCatalog
+	if err := json.Unmarshal(data, &jsonCatalog); err != nil {
+		return fmt.Errorf("failed to parse JSON catalog: %v", err)
+	}
+
+	// Convert to our ShowCatalog format
+	p.catalog = &ShowCatalog{
+		Version:   jsonCatalog.Version,
+		ClipIndex: make(map[string]interface{}),
+		Sequences: make(map[string]interface{}),
+	}
+
+	// Convert clip_index
+	for tag, entries := range jsonCatalog.ClipIndex {
+		if entryList, ok := entries.([]interface{}); ok {
+			var catalogEntries []*CatalogEntry
+			for _, entryData := range entryList {
+				if entryMap, ok := entryData.(map[string]interface{}); ok {
+					catalogEntry := &CatalogEntry{
+						Path:     getString(entryMap, "path"),
+						Title:    getString(entryMap, "title"),
+						Duration: getFloat64(entryMap, "duration"),
+						Tag:      getString(entryMap, "tag"),
+						Count:    getInt(entryMap, "count"),
+					}
+					if hints, ok := entryMap["hints"].([]interface{}); ok {
+						for _, hint := range hints {
+							if hintStr, ok := hint.(string); ok {
+								catalogEntry.Hints = append(catalogEntry.Hints, hintStr)
+							}
+						}
+					}
+					catalogEntries = append(catalogEntries, catalogEntry)
+				}
+			}
+			p.catalog.ClipIndex[tag] = catalogEntries
+		}
+	}
+
+	// Convert sequences
+	for seqKey, seqData := range jsonCatalog.Sequences {
+		p.catalog.Sequences[seqKey] = seqData
+	}
+
+	p.logger.Printf("Loaded JSON catalog for %s: version=%.1f, tags=%d",
+		p.stationConfig.NetworkName, p.catalog.Version, len(p.catalog.ClipIndex))
+
+	return nil
+}
+
+// JSONShowCatalog represents the catalog structure from JSON
+type JSONShowCatalog struct {
+	Version   float64                `json:"version"`
+	ClipIndex map[string]interface{} `json:"clip_index"`
+	Sequences map[string]interface{} `json:"sequences"`
+}
+
+// Helper functions for type conversion
+func getString(m map[string]interface{}, key string) string {
+	if val, ok := m[key].(string); ok {
+		return val
+	}
+	return ""
+}
+
+func getFloat64(m map[string]interface{}, key string) float64 {
+	if val, ok := m[key].(float64); ok {
+		return val
+	}
+	return 0.0
+}
+
+func getInt(m map[string]interface{}, key string) int {
+	if val, ok := m[key].(float64); ok {
+		return int(val)
+	}
+	return 0
+}
+
+// getCatalogEntryByPath finds a catalog entry by file path
+func (p *WebStationPlayer) getCatalogEntryByPath(path string) *CatalogEntry {
+	if p.catalog == nil {
+		return nil
+	}
+
+	for tag, entries := range p.catalog.ClipIndex {
+		if entryList, ok := entries.([]interface{}); ok {
+			for _, entryData := range entryList {
+				if entry, ok := entryData.(*CatalogEntry); ok {
+					if entry.Path == path {
+						p.logger.Printf("Found catalog entry for path %s in tag %s", path, tag)
+						return entry
+					}
+				}
+			}
+		}
+	}
+
+	return nil
 }
