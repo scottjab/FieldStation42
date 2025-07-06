@@ -538,90 +538,61 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 		return
 	}
 
-	streamURL := w.player.getCurrentStreamURL()
-
-	if streamURL != "" && streamURL != "/live" {
-		// Redirect to the stream URL
-		http.Redirect(resp, req, streamURL, http.StatusTemporaryRedirect)
-		return
-	}
-
-	// Fallback to file-based streaming
-	if w.player.currentPlayingFilePath == "" {
-		http.Error(resp, "No content currently playing", http.StatusNotFound)
-		return
-	}
-
 	filePath := w.player.currentPlayingFilePath
 
-	// If it's a placeholder, generate a simple video
-	if filePath == "placeholder" {
-		w.logger.Printf("Generating placeholder video for standard channel")
-
-		stationName := "Unknown"
-		if w.player.stationConfig != nil {
-			stationName = w.player.stationConfig.NetworkName
-		}
-
-		// Simplified ffmpeg command for better compatibility
+	// If the current channel is a guide, generate the guide stream
+	if filePath == "guide_stream" {
+		w.logger.Printf("Generating guide video for guide channel")
 		ffmpegCmd := []string{
 			"ffmpeg",
 			"-f", "lavfi",
-			"-i", "color=black:size=1280x720:rate=1:duration=3600",
-			"-vf", fmt.Sprintf("drawtext=text='%s':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2", stationName),
-			"-f", "mp4",
-			"-vcodec", "libx264",
+			"-i", "color=black:size=1280x720:rate=30:duration=3600",
+			"-vf", "drawtext=text='FieldStation42 Guide':fontcolor=green:fontsize=60:x=(w-text_w)/2:y=50",
+			"-f", "webm",
+			"-vcodec", "libvpx-vp9",
+			"-acodec", "libopus",
 			"-preset", "ultrafast",
-			"-b:v", "500k",
-			"-movflags", "frag_keyframe+empty_moov",
+			"-b:v", "1000k",
+			"-b:a", "128k",
+			"-deadline", "realtime",
+			"-cpu-used", "8",
 			"-y",
 			"-loglevel", "error",
 			"pipe:1",
 		}
-
-		w.logger.Printf("Starting placeholder stream with ffmpeg")
+		w.logger.Printf("Starting guide stream with ffmpeg")
 		cmd := exec.Command(ffmpegCmd[0], ffmpegCmd[1:]...)
-
-		// Capture stderr for debugging
 		stderr, err := cmd.StderrPipe()
 		if err != nil {
 			w.logger.Printf("Failed to create stderr pipe: %v", err)
-			http.Error(resp, "Failed to create placeholder stream pipe", http.StatusInternalServerError)
+			http.Error(resp, "Failed to create guide stream pipe", http.StatusInternalServerError)
 			return
 		}
-
 		pipe, err := cmd.StdoutPipe()
 		if err != nil {
 			w.logger.Printf("Failed to create stdout pipe: %v", err)
-			http.Error(resp, "Failed to create placeholder stream pipe", http.StatusInternalServerError)
+			http.Error(resp, "Failed to create guide stream pipe", http.StatusInternalServerError)
 			return
 		}
-
 		if err := cmd.Start(); err != nil {
-			w.logger.Printf("Failed to start placeholder ffmpeg: %v", err)
-			http.Error(resp, "Failed to start placeholder ffmpeg", http.StatusInternalServerError)
+			w.logger.Printf("Failed to start guide ffmpeg: %v", err)
+			http.Error(resp, "Failed to start guide ffmpeg", http.StatusInternalServerError)
 			return
 		}
-
-		resp.Header().Set("Content-Type", "video/mp4")
+		resp.Header().Set("Content-Type", "video/webm")
 		resp.Header().Set("Cache-Control", "no-cache")
 		resp.Header().Set("Connection", "keep-alive")
-
-		// Stream the placeholder video
+		resp.Header().Set("Transfer-Encoding", "chunked")
+		resp.WriteHeader(http.StatusOK)
 		go func() {
-			defer func() {
-				_ = cmd.Process.Kill()
-			}()
-
-			// Log stderr for debugging
+			defer func() { _ = cmd.Process.Kill() }()
 			go func() {
 				scanner := bufio.NewScanner(stderr)
 				for scanner.Scan() {
 					w.logger.Printf("ffmpeg stderr: %s", scanner.Text())
 				}
 			}()
-
-			buffer := make([]byte, 1024*1024)
+			buffer := make([]byte, 4096)
 			totalBytes := 0
 			for {
 				n, err := pipe.Read(buffer)
@@ -630,6 +601,89 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 					if _, writeErr := resp.Write(buffer[:n]); writeErr != nil {
 						w.logger.Printf("Failed to write to response: %v", writeErr)
 						break
+					}
+					if flusher, ok := resp.(http.Flusher); ok {
+						flusher.Flush()
+					}
+				}
+				if err != nil {
+					w.logger.Printf("Pipe read error: %v", err)
+					break
+				}
+			}
+			w.logger.Printf("Guide stream ended, total bytes sent: %d", totalBytes)
+		}()
+		return
+	}
+
+	// If it's a placeholder, generate a simple video
+	if filePath == "placeholder" {
+		w.logger.Printf("Generating placeholder video for standard channel")
+		stationName := "Unknown"
+		if w.player.stationConfig != nil {
+			stationName = w.player.stationConfig.NetworkName
+		}
+		ffmpegCmd := []string{
+			"ffmpeg",
+			"-f", "lavfi",
+			"-i", "color=black:size=1280x720:rate=30:duration=3600",
+			"-vf", fmt.Sprintf("drawtext=text='%s':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2", stationName),
+			"-f", "webm",
+			"-vcodec", "libvpx-vp9",
+			"-acodec", "libopus",
+			"-preset", "ultrafast",
+			"-b:v", "1000k",
+			"-b:a", "128k",
+			"-deadline", "realtime",
+			"-cpu-used", "8",
+			"-y",
+			"-loglevel", "error",
+			"pipe:1",
+		}
+		w.logger.Printf("Starting placeholder stream with ffmpeg")
+		cmd := exec.Command(ffmpegCmd[0], ffmpegCmd[1:]...)
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			w.logger.Printf("Failed to create stderr pipe: %v", err)
+			http.Error(resp, "Failed to create placeholder stream pipe", http.StatusInternalServerError)
+			return
+		}
+		pipe, err := cmd.StdoutPipe()
+		if err != nil {
+			w.logger.Printf("Failed to create stdout pipe: %v", err)
+			http.Error(resp, "Failed to create placeholder stream pipe", http.StatusInternalServerError)
+			return
+		}
+		if err := cmd.Start(); err != nil {
+			w.logger.Printf("Failed to start placeholder ffmpeg: %v", err)
+			http.Error(resp, "Failed to start placeholder ffmpeg", http.StatusInternalServerError)
+			return
+		}
+		resp.Header().Set("Content-Type", "video/webm")
+		resp.Header().Set("Cache-Control", "no-cache")
+		resp.Header().Set("Connection", "keep-alive")
+		resp.Header().Set("Transfer-Encoding", "chunked")
+		resp.WriteHeader(http.StatusOK)
+		go func() {
+			defer func() { _ = cmd.Process.Kill() }()
+			go func() {
+				scanner := bufio.NewScanner(stderr)
+				for scanner.Scan() {
+					w.logger.Printf("ffmpeg stderr: %s", scanner.Text())
+				}
+			}()
+			buffer := make([]byte, 4096)
+			totalBytes := 0
+			for {
+				n, err := pipe.Read(buffer)
+				if n > 0 {
+					totalBytes += n
+					if _, writeErr := resp.Write(buffer[:n]); writeErr != nil {
+						w.logger.Printf("Failed to write to response: %v", writeErr)
+						break
+					}
+					if flusher, ok := resp.(http.Flusher); ok {
+						flusher.Flush()
 					}
 				}
 				if err != nil {
@@ -651,29 +705,23 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 
 	// Check if it's a local file
 	if _, err := os.Stat(filePath); err == nil {
-		// Local file - transcode with ffmpeg
 		ffmpegCmd := []string{
 			"ffmpeg",
 			"-i", filePath,
-			"-f", "mp4",
-			"-vcodec", "libx264",
-			"-acodec", "aac",
-			"-movflags", "frag_keyframe+empty_moov+default_base_moof",
+			"-f", "webm",
+			"-vcodec", "libvpx-vp9",
+			"-acodec", "libopus",
 			"-preset", "veryfast",
-			"-tune", "zerolatency",
-			"-b:v", "1M",
-			"-bufsize", "2M",
-			"-maxrate", "1M",
-			"-analyzeduration", "100M",
-			"-probesize", "100M",
+			"-b:v", "1000k",
+			"-b:a", "128k",
+			"-deadline", "realtime",
+			"-cpu-used", "8",
 			"-y",
 			"-loglevel", "error",
 			"pipe:1",
 		}
-
 		w.logger.Printf("Starting live stream for: %s", filePath)
 		w.logger.Printf("Running ffmpeg command: %s", strings.Join(ffmpegCmd, " "))
-
 		w.currentStreamProcess = exec.Command(ffmpegCmd[0], ffmpegCmd[1:]...)
 		w.currentStreamProcess.Stderr = os.Stderr
 		pipe, err := w.currentStreamProcess.StdoutPipe()
@@ -682,18 +730,16 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 			http.Error(resp, "Failed to create stream pipe", http.StatusInternalServerError)
 			return
 		}
-
 		if err := w.currentStreamProcess.Start(); err != nil {
 			w.streamMutex.Unlock()
 			http.Error(resp, "Failed to start ffmpeg", http.StatusInternalServerError)
 			return
 		}
-
-		resp.Header().Set("Content-Type", "video/mp4")
+		resp.Header().Set("Content-Type", "video/webm")
 		resp.Header().Set("Cache-Control", "no-cache")
 		resp.Header().Set("Connection", "keep-alive")
-
-		// Stream the video data
+		resp.Header().Set("Transfer-Encoding", "chunked")
+		resp.WriteHeader(http.StatusOK)
 		go func() {
 			defer w.streamMutex.Unlock()
 			defer func() {
@@ -702,13 +748,15 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 					w.currentStreamProcess = nil
 				}
 			}()
-
-			buffer := make([]byte, 1024*1024) // 1MB buffer
+			buffer := make([]byte, 4096)
 			for {
 				n, err := pipe.Read(buffer)
 				if n > 0 {
 					if _, writeErr := resp.Write(buffer[:n]); writeErr != nil {
 						break
+					}
+					if flusher, ok := resp.(http.Flusher); ok {
+						flusher.Flush()
 					}
 				}
 				if err != nil {
@@ -732,17 +780,23 @@ func (w *WebFieldPlayer) handleGuide(resp http.ResponseWriter, req *http.Request
 func (w *WebFieldPlayer) handleGuideStream(resp http.ResponseWriter, req *http.Request) {
 	w.logger.Printf("Guide stream request from %s", req.RemoteAddr)
 
-	// Simplified ffmpeg command for better compatibility
+	// Use H.264 with proper streaming settings
 	ffmpegCmd := []string{
 		"ffmpeg",
 		"-f", "lavfi",
-		"-i", "color=black:size=1280x720:rate=1:duration=3600",
+		"-i", "color=black:size=1280x720:rate=30:duration=3600",
 		"-vf", "drawtext=text='FieldStation42 Guide':fontcolor=green:fontsize=60:x=(w-text_w)/2:y=50",
-		"-f", "mp4",
+		"-f", "mpegts",
 		"-vcodec", "libx264",
 		"-preset", "ultrafast",
-		"-b:v", "500k",
-		"-movflags", "frag_keyframe+empty_moov",
+		"-tune", "zerolatency",
+		"-b:v", "1000k",
+		"-bufsize", "2000k",
+		"-maxrate", "1000k",
+		"-g", "30",
+		"-keyint_min", "30",
+		"-sc_threshold", "0",
+		"-frag_duration", "1000000",
 		"-y",
 		"-loglevel", "error",
 		"pipe:1",
@@ -772,9 +826,12 @@ func (w *WebFieldPlayer) handleGuideStream(resp http.ResponseWriter, req *http.R
 		return
 	}
 
-	resp.Header().Set("Content-Type", "video/mp4")
+	// Set proper streaming headers
+	resp.Header().Set("Content-Type", "video/webm")
 	resp.Header().Set("Cache-Control", "no-cache")
 	resp.Header().Set("Connection", "keep-alive")
+	resp.Header().Set("Transfer-Encoding", "chunked")
+	resp.WriteHeader(http.StatusOK)
 
 	// Stream the guide video
 	go func() {
@@ -790,7 +847,7 @@ func (w *WebFieldPlayer) handleGuideStream(resp http.ResponseWriter, req *http.R
 			}
 		}()
 
-		buffer := make([]byte, 1024*1024)
+		buffer := make([]byte, 4096)
 		totalBytes := 0
 		for {
 			n, err := pipe.Read(buffer)
@@ -799,6 +856,10 @@ func (w *WebFieldPlayer) handleGuideStream(resp http.ResponseWriter, req *http.R
 				if _, writeErr := resp.Write(buffer[:n]); writeErr != nil {
 					w.logger.Printf("Failed to write to response: %v", writeErr)
 					break
+				}
+				// Flush the response writer to ensure data is sent immediately
+				if flusher, ok := resp.(http.Flusher); ok {
+					flusher.Flush()
 				}
 			}
 			if err != nil {
@@ -990,7 +1051,18 @@ func (w *WebFieldPlayer) getHTMLInterface() string {
                 if (video.src !== '/live') {
                     video.src = '/live';
                     video.load();
-                    video.play().catch(e => console.log('Auto-play prevented:', e));
+                    // For MPEG-TS streams, we need to handle them differently
+                    video.addEventListener('loadedmetadata', () => {
+                        video.play().catch(e => console.log('Auto-play prevented:', e));
+                    });
+                    video.addEventListener('error', (e) => {
+                        console.log('Video error:', e);
+                        // Try to reload the stream
+                        setTimeout(() => {
+                            video.src = '/live?' + Date.now();
+                            video.load();
+                        }, 1000);
+                    });
                 }
                 
                 document.getElementById('status').textContent = 
