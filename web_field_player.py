@@ -149,8 +149,7 @@ class WebFieldPlayer:
             allow_headers=["*"],
         )
         
-        # Setup static files
-        self.app.mount("/static", StaticFiles(directory="web_static"), name="static")
+        # No static files needed - everything is served inline
         
         # Setup routes
         self.setup_routes()
