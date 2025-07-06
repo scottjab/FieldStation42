@@ -103,6 +103,8 @@ in
     webFieldPlayer = webFieldPlayer;
     web-field-player = webFieldPlayer;
     convert_schedules = convertSchedules;
+    field-player = fieldPlayer;
+    station_42 = station;
   };
 
   # Development environment
