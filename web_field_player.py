@@ -125,6 +125,32 @@ class WebStationPlayer:
     def get_current_stream_url(self):
         return self.current_stream_url
 
+    def show_guide(self, guide_config):
+        """Show guide channel - adapted for web streaming instead of tkinter"""
+        self._l.info("Starting guide channel for web player")
+        
+        # For web player, we'll serve a static guide page or image
+        # instead of running a tkinter window
+        if "guide_image" in guide_config:
+            self.play_file(guide_config["guide_image"])
+        elif "guide_html" in guide_config:
+            # Could serve a custom HTML guide page
+            self.current_stream_url = "/guide"
+        else:
+            # Default: show a placeholder or static image
+            self.current_stream_url = "/static/guide_placeholder.png"
+            
+        # Run the guide loop like the original player
+        keep_going = True
+        while keep_going:
+            time.sleep(0.05)
+            response = check_channel_socket()
+            if response:
+                self._l.info("Guide channel received channel change command")
+                return response
+
+        return PlayerOutcome(PlayStatus.SUCCESS)
+
     def schedule_panic(self, network_name):
         self._l.critical("*********************Schedule Panic*********************")
         self._l.critical(f"Schedule not found for {network_name} - attempting to generate a one-day extention")
@@ -296,6 +322,26 @@ class WebFieldPlayer:
                     if video_path.exists():
                         return FileResponse(str(video_path))
             raise HTTPException(status_code=404, detail="Video not found")
+            
+        @self.app.get("/guide")
+        async def serve_guide():
+            """Serve guide channel content"""
+            return HTMLResponse(self.get_guide_html())
+            
+        @self.app.get("/static/guide_placeholder.png")
+        async def serve_guide_placeholder():
+            """Serve a placeholder image for guide channels"""
+            # Create a simple placeholder image or return a default one
+            return HTMLResponse("""
+            <html>
+            <head><title>FieldStation42 Guide</title></head>
+            <body style="background: #000; color: #0f0; font-family: monospace; text-align: center; padding: 50px;">
+                <h1>FieldStation42 Guide</h1>
+                <p>Guide channel is currently active</p>
+                <p>Use channel up/down to navigate</p>
+            </body>
+            </html>
+            """)
             
     def get_html_interface(self):
         return """
@@ -499,6 +545,72 @@ class WebFieldPlayer:
 </html>
         """
         
+    def get_guide_html(self):
+        """Generate HTML for the guide channel"""
+        return """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FieldStation42 Guide</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            background-color: #000;
+            color: #0f0;
+            margin: 0;
+            padding: 20px;
+            overflow: hidden;
+        }
+        .guide-container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        .header {
+            text-align: center;
+            padding: 20px;
+            border-bottom: 2px solid #0f0;
+        }
+        .content {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+        .guide-text {
+            font-size: 1.5em;
+            line-height: 1.6;
+        }
+        .footer {
+            text-align: center;
+            padding: 20px;
+            border-top: 2px solid #0f0;
+        }
+    </style>
+</head>
+<body>
+    <div class="guide-container">
+        <div class="header">
+            <h1>FieldStation42 Guide</h1>
+        </div>
+        <div class="content">
+            <div class="guide-text">
+                <p>Welcome to the FieldStation42 Guide Channel</p>
+                <p>Use channel up/down to navigate between stations</p>
+                <p>Guide functionality coming soon...</p>
+            </div>
+        </div>
+        <div class="footer">
+            <p>FieldStation42 - Retro TV Experience</p>
+        </div>
+    </div>
+</body>
+</html>
+        """
+        
     async def switch_channel(self):
         """Switch to the current channel index"""
         if not self.manager.stations:
@@ -599,8 +711,7 @@ def main_loop(transition_fn, host="0.0.0.0", port=9191):
 
         if channel_conf["network_type"] == "guide" and not skip_play:
             logger.info("Starting the guide channel")
-            # Guide channels not supported in web player yet
-            outcome = PlayerOutcome(PlayStatus.SUCCESS)
+            outcome = player.show_guide(channel_conf)
         elif not skip_play:
             now = datetime.datetime.now()
 
