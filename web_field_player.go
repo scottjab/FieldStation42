@@ -585,7 +585,12 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 		resp.Header().Set("Transfer-Encoding", "chunked")
 		resp.WriteHeader(http.StatusOK)
 		go func() {
-			defer func() { _ = cmd.Process.Kill() }()
+			defer func() {
+				if r := recover(); r != nil {
+					w.logger.Printf("Panic in guide stream goroutine: %v", r)
+				}
+				_ = cmd.Process.Kill()
+			}()
 			go func() {
 				scanner := bufio.NewScanner(stderr)
 				for scanner.Scan() {
@@ -595,6 +600,14 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 			buffer := make([]byte, 4096)
 			totalBytes := 0
 			for {
+				// Check if request context is done (client disconnected)
+				select {
+				case <-req.Context().Done():
+					w.logger.Printf("Client disconnected, stopping guide stream")
+					return
+				default:
+				}
+
 				n, err := pipe.Read(buffer)
 				if n > 0 {
 					totalBytes += n
@@ -602,6 +615,7 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 						w.logger.Printf("Failed to write to response: %v", writeErr)
 						break
 					}
+					// Check if response writer is still valid before flushing
 					if flusher, ok := resp.(http.Flusher); ok {
 						flusher.Flush()
 					}
@@ -665,7 +679,12 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 		resp.Header().Set("Transfer-Encoding", "chunked")
 		resp.WriteHeader(http.StatusOK)
 		go func() {
-			defer func() { _ = cmd.Process.Kill() }()
+			defer func() {
+				if r := recover(); r != nil {
+					w.logger.Printf("Panic in placeholder stream goroutine: %v", r)
+				}
+				_ = cmd.Process.Kill()
+			}()
 			go func() {
 				scanner := bufio.NewScanner(stderr)
 				for scanner.Scan() {
@@ -675,6 +694,14 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 			buffer := make([]byte, 4096)
 			totalBytes := 0
 			for {
+				// Check if request context is done (client disconnected)
+				select {
+				case <-req.Context().Done():
+					w.logger.Printf("Client disconnected, stopping guide stream")
+					return
+				default:
+				}
+
 				n, err := pipe.Read(buffer)
 				if n > 0 {
 					totalBytes += n
@@ -682,6 +709,7 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 						w.logger.Printf("Failed to write to response: %v", writeErr)
 						break
 					}
+					// Check if response writer is still valid before flushing
 					if flusher, ok := resp.(http.Flusher); ok {
 						flusher.Flush()
 					}
@@ -743,6 +771,9 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 		go func() {
 			defer w.streamMutex.Unlock()
 			defer func() {
+				if r := recover(); r != nil {
+					w.logger.Printf("Panic in local file stream goroutine: %v", r)
+				}
 				if w.currentStreamProcess != nil {
 					_ = w.currentStreamProcess.Process.Kill()
 					w.currentStreamProcess = nil
@@ -750,11 +781,20 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 			}()
 			buffer := make([]byte, 4096)
 			for {
+				// Check if request context is done (client disconnected)
+				select {
+				case <-req.Context().Done():
+					w.logger.Printf("Client disconnected, stopping live stream")
+					return
+				default:
+				}
+
 				n, err := pipe.Read(buffer)
 				if n > 0 {
 					if _, writeErr := resp.Write(buffer[:n]); writeErr != nil {
 						break
 					}
+					// Check if response writer is still valid before flushing
 					if flusher, ok := resp.(http.Flusher); ok {
 						flusher.Flush()
 					}
@@ -836,6 +876,9 @@ func (w *WebFieldPlayer) handleGuideStream(resp http.ResponseWriter, req *http.R
 	// Stream the guide video
 	go func() {
 		defer func() {
+			if r := recover(); r != nil {
+				w.logger.Printf("Panic in guide stream goroutine: %v", r)
+			}
 			_ = cmd.Process.Kill()
 		}()
 
@@ -850,6 +893,14 @@ func (w *WebFieldPlayer) handleGuideStream(resp http.ResponseWriter, req *http.R
 		buffer := make([]byte, 4096)
 		totalBytes := 0
 		for {
+			// Check if request context is done (client disconnected)
+			select {
+			case <-req.Context().Done():
+				w.logger.Printf("Client disconnected, stopping guide stream")
+				return
+			default:
+			}
+
 			n, err := pipe.Read(buffer)
 			if n > 0 {
 				totalBytes += n
@@ -857,7 +908,7 @@ func (w *WebFieldPlayer) handleGuideStream(resp http.ResponseWriter, req *http.R
 					w.logger.Printf("Failed to write to response: %v", writeErr)
 					break
 				}
-				// Flush the response writer to ensure data is sent immediately
+				// Check if response writer is still valid before flushing
 				if flusher, ok := resp.(http.Flusher); ok {
 					flusher.Flush()
 				}
