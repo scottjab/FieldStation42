@@ -533,7 +533,27 @@ func (w *WebFieldPlayer) handleChannelDown(resp http.ResponseWriter, req *http.R
 }
 
 func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Request) {
-	if w.player == nil || w.player.currentPlayingFilePath == "" {
+	w.logger.Printf("Live stream request from %s", req.RemoteAddr)
+
+	if w.player == nil {
+		w.logger.Println("No player available")
+		http.Error(resp, "No content currently playing", http.StatusNotFound)
+		return
+	}
+
+	streamURL := w.player.getCurrentStreamURL()
+	w.logger.Printf("Current stream URL: %s", streamURL)
+
+	if streamURL != "" {
+		// Redirect to the stream URL
+		w.logger.Printf("Redirecting to stream URL: %s", streamURL)
+		http.Redirect(resp, req, streamURL, http.StatusTemporaryRedirect)
+		return
+	}
+
+	// Fallback to file-based streaming
+	if w.player.currentPlayingFilePath == "" {
+		w.logger.Println("No stream URL or file path available")
 		http.Error(resp, "No content currently playing", http.StatusNotFound)
 		return
 	}
@@ -1082,18 +1102,12 @@ func (p *WebStationPlayer) showGuide(guideConfig *StationConfig) *PlayerOutcome 
 
 	// Set up guide video stream
 	p.currentStreamURL = "/guide_stream"
+	p.currentPlayingFilePath = "guide_stream"
+	p.logger.Printf("Guide stream URL set to: %s", p.currentStreamURL)
 
-	// Run the guide loop like the original player
-	keepGoing := true
-	for keepGoing {
-		time.Sleep(50 * time.Millisecond)
-		response := checkChannelSocket()
-		if response != nil {
-			p.logger.Println("Guide channel received channel change command")
-			return response
-		}
-	}
-
+	// For web player, we don't need to run the infinite loop here
+	// The guide content will be served via the /guide_stream endpoint
+	// Just return success to continue the main loop
 	return &PlayerOutcome{Status: PlayStatusSuccess}
 }
 
@@ -1213,12 +1227,16 @@ func mainLoop(webPlayer *WebFieldPlayer, logger *log.Logger) {
 	skipPlay := false
 	stuckTimer := 0
 
+	logger.Printf("Starting main loop with channel: %s (type: %s)", channelConf.NetworkName, channelConf.NetworkType)
+
 	for webPlayer.running {
 		logger.Printf("Playing station: %s", channelConf.NetworkName)
 
 		if channelConf.NetworkType == "guide" && !skipPlay {
 			logger.Println("Starting the guide channel")
 			outcome = player.showGuide(&channelConf)
+			logger.Printf("Guide channel outcome: %v", outcome.Status)
+			logger.Printf("Current stream URL: %s", player.getCurrentStreamURL())
 		} else if !skipPlay {
 			now := time.Now()
 			weekDay := now.Weekday().String()
@@ -1229,6 +1247,7 @@ func mainLoop(webPlayer *WebFieldPlayer, logger *log.Logger) {
 
 			// Use the same scheduling logic as the original player
 			outcome = player.playSlot(channelConf.NetworkName, now)
+			logger.Printf("Standard channel outcome: %v", outcome.Status)
 		}
 
 		logger.Printf("Got player outcome: %v", outcome.Status)
