@@ -555,17 +555,35 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 	}
 
 	// Generate video file
-	ffmpegCmd := []string{
-		"ffmpeg",
-		"-i", inputSource,
-		"-c:v", "libx264",
-		"-c:a", "aac",
-		"-preset", "ultrafast",
-		"-b:v", "1000k",
-		"-b:a", "128k",
-		"-y",
-		"-loglevel", "error",
-		tempFile,
+	var ffmpegCmd []string
+	switch filePath {
+	case "guide_stream", "placeholder":
+		ffmpegCmd = []string{
+			"ffmpeg",
+			"-f", "lavfi",
+			"-i", inputSource,
+			"-c:v", "libx264",
+			"-c:a", "aac",
+			"-preset", "ultrafast",
+			"-b:v", "1000k",
+			"-b:a", "128k",
+			"-y",
+			"-loglevel", "error",
+			tempFile,
+		}
+	default:
+		ffmpegCmd = []string{
+			"ffmpeg",
+			"-i", inputSource,
+			"-c:v", "libx264",
+			"-c:a", "aac",
+			"-preset", "ultrafast",
+			"-b:v", "1000k",
+			"-b:a", "128k",
+			"-y",
+			"-loglevel", "error",
+			tempFile,
+		}
 	}
 
 	w.logger.Printf("Generating video file with ffmpeg")
@@ -833,17 +851,35 @@ func (w *WebFieldPlayer) handleSimpleVideo(resp http.ResponseWriter, req *http.R
 	}
 
 	// Generate video file with ffmpeg
-	ffmpegCmd := []string{
-		"ffmpeg",
-		"-i", inputSource,
-		"-c:v", "libx264",
-		"-c:a", "aac",
-		"-preset", "ultrafast",
-		"-b:v", "1000k",
-		"-b:a", "128k",
-		"-y",
-		"-loglevel", "error",
-		videoFile,
+	var ffmpegCmd []string
+	switch filePath {
+	case "guide_stream", "placeholder":
+		ffmpegCmd = []string{
+			"ffmpeg",
+			"-f", "lavfi",
+			"-i", inputSource,
+			"-c:v", "libx264",
+			"-c:a", "aac",
+			"-preset", "ultrafast",
+			"-b:v", "1000k",
+			"-b:a", "128k",
+			"-y",
+			"-loglevel", "error",
+			videoFile,
+		}
+	default:
+		ffmpegCmd = []string{
+			"ffmpeg",
+			"-i", inputSource,
+			"-c:v", "libx264",
+			"-c:a", "aac",
+			"-preset", "ultrafast",
+			"-b:v", "1000k",
+			"-b:a", "128k",
+			"-y",
+			"-loglevel", "error",
+			videoFile,
+		}
 	}
 
 	w.logger.Printf("Generating video file with ffmpeg")
