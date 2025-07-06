@@ -134,11 +134,18 @@
             export PYTHONPATH=${self}:$PYTHONPATH
             ${pythonEnv}/bin/python ${self}/station_42.py "$@"
           '';
+
+          webFieldPlayer = pkgs.writeScriptBin "web_field_player" ''
+            #!${pkgs.bash}/bin/bash
+            export PYTHONPATH=${self}:$PYTHONPATH
+            ${pythonEnv}/bin/python ${self}/web_field_player.py "$@"
+          '';
         in
         {
           packages = {
             field-player = fieldPlayer;
             station = station;
+            web-field-player = webFieldPlayer;
             default = station;
           };
 
@@ -150,6 +157,10 @@
             station = {
               type = "app";
               program = "${station}/bin/station_42";
+            };
+            web-field-player = {
+              type = "app";
+              program = "${webFieldPlayer}/bin/web_field_player";
             };
             default = self.apps.${system}.station;
           };
