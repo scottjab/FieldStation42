@@ -9,10 +9,11 @@ import threading
 import os
 from pathlib import Path
 from typing import Optional, Dict, Any
+import subprocess
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
@@ -69,9 +70,8 @@ class WebStationPlayer:
                 if is_stream:
                     self.current_stream_url = file_path
                 else:
-                    # Convert local file path to web-accessible URL
-                    # This assumes the file is served from a static directory
-                    self.current_stream_url = f"/video/{Path(file_path).name}"
+                    # Convert local file path to web-accessible streaming URL
+                    self.current_stream_url = f"/stream/{Path(file_path).name}"
                 
                 basename = os.path.basename(file_path)
                 title, _ = os.path.splitext(basename)
@@ -348,6 +348,60 @@ class WebFieldPlayer:
             </body>
             </html>
             """)
+            
+        @self.app.get("/stream/{filename}")
+        async def stream_video(filename: str):
+            # Find the file in the content directories
+            video_path = None
+            for station in self.manager.stations:
+                if "content_dir" in station:
+                    candidate = Path(station["content_dir"]) / filename
+                    if candidate.exists():
+                        video_path = str(candidate)
+                        break
+            if not video_path:
+                raise HTTPException(status_code=404, detail="Video not found")
+
+            # ffmpeg command to transcode to H.264/AAC MP4 for browsers
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-i", video_path,
+                "-f", "mp4",
+                "-vcodec", "libx264",
+                "-acodec", "aac",
+                "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+                "-preset", "veryfast",
+                "-tune", "zerolatency",
+                "-b:v", "1M",
+                "-bufsize", "2M",
+                "-maxrate", "1M",
+                "-analyzeduration", "100M",
+                "-probesize", "100M",
+                "-y",
+                "-loglevel", "error",
+                "pipe:1"
+            ]
+
+            process = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=10**6
+            )
+
+            def iterfile():
+                try:
+                    while True:
+                        chunk = process.stdout.read(1024*1024)
+                        if not chunk:
+                            break
+                        yield chunk
+                finally:
+                    process.stdout.close()
+                    process.stderr.close()
+                    process.kill()
+
+            return StreamingResponse(iterfile(), media_type="video/mp4")
             
     def get_html_interface(self):
         return """
