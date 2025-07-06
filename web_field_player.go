@@ -556,41 +556,49 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 
 	// If it's a placeholder, generate a simple video
 	if filePath == "placeholder" {
+		w.logger.Printf("Generating placeholder video for standard channel")
 
 		stationName := "Unknown"
 		if w.player.stationConfig != nil {
 			stationName = w.player.stationConfig.NetworkName
 		}
 
+		// Simplified ffmpeg command for better compatibility
 		ffmpegCmd := []string{
 			"ffmpeg",
 			"-f", "lavfi",
-			"-i", fmt.Sprintf("color=black:size=1280x720:rate=1:duration=3600,drawtext=text='%s':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2:font=monospace", stationName),
+			"-i", "color=black:size=1280x720:rate=1:duration=3600",
+			"-vf", fmt.Sprintf("drawtext=text='%s':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2", stationName),
 			"-f", "mp4",
 			"-vcodec", "libx264",
-			"-preset", "veryfast",
-			"-tune", "zerolatency",
+			"-preset", "ultrafast",
 			"-b:v", "500k",
-			"-bufsize", "1M",
-			"-maxrate", "500k",
-			"-g", "30",
-			"-keyint_min", "30",
-			"-sc_threshold", "0",
-			"-movflags", "frag_keyframe+empty_moov+default_base_moof",
+			"-movflags", "frag_keyframe+empty_moov",
 			"-y",
 			"-loglevel", "error",
 			"pipe:1",
 		}
 
+		w.logger.Printf("Starting placeholder stream with ffmpeg")
 		cmd := exec.Command(ffmpegCmd[0], ffmpegCmd[1:]...)
-		cmd.Stderr = os.Stderr
+
+		// Capture stderr for debugging
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			w.logger.Printf("Failed to create stderr pipe: %v", err)
+			http.Error(resp, "Failed to create placeholder stream pipe", http.StatusInternalServerError)
+			return
+		}
+
 		pipe, err := cmd.StdoutPipe()
 		if err != nil {
+			w.logger.Printf("Failed to create stdout pipe: %v", err)
 			http.Error(resp, "Failed to create placeholder stream pipe", http.StatusInternalServerError)
 			return
 		}
 
 		if err := cmd.Start(); err != nil {
+			w.logger.Printf("Failed to start placeholder ffmpeg: %v", err)
 			http.Error(resp, "Failed to start placeholder ffmpeg", http.StatusInternalServerError)
 			return
 		}
@@ -605,18 +613,31 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 				_ = cmd.Process.Kill()
 			}()
 
+			// Log stderr for debugging
+			go func() {
+				scanner := bufio.NewScanner(stderr)
+				for scanner.Scan() {
+					w.logger.Printf("ffmpeg stderr: %s", scanner.Text())
+				}
+			}()
+
 			buffer := make([]byte, 1024*1024)
+			totalBytes := 0
 			for {
 				n, err := pipe.Read(buffer)
 				if n > 0 {
+					totalBytes += n
 					if _, writeErr := resp.Write(buffer[:n]); writeErr != nil {
+						w.logger.Printf("Failed to write to response: %v", writeErr)
 						break
 					}
 				}
 				if err != nil {
+					w.logger.Printf("Pipe read error: %v", err)
 					break
 				}
 			}
+			w.logger.Printf("Placeholder stream ended, total bytes sent: %d", totalBytes)
 		}()
 		return
 	}
@@ -709,36 +730,44 @@ func (w *WebFieldPlayer) handleGuide(resp http.ResponseWriter, req *http.Request
 }
 
 func (w *WebFieldPlayer) handleGuideStream(resp http.ResponseWriter, req *http.Request) {
-	currentTime := time.Now().Format("15:04:05")
+	w.logger.Printf("Guide stream request from %s", req.RemoteAddr)
+
+	// Simplified ffmpeg command for better compatibility
 	ffmpegCmd := []string{
 		"ffmpeg",
 		"-f", "lavfi",
-		"-i", fmt.Sprintf("color=black:size=1280x720:rate=1:duration=3600,drawtext=text='FieldStation42 Guide':fontcolor=green:fontsize=60:x=(w-text_w)/2:y=50:font=monospace,drawtext=text='Current Time: %s':fontcolor=green:fontsize=40:x=50:y=150:font=monospace,drawtext=text='Use CH UP/DOWN to navigate':fontcolor=green:fontsize=30:x=50:y=200:font=monospace", currentTime),
+		"-i", "color=black:size=1280x720:rate=1:duration=3600",
+		"-vf", "drawtext=text='FieldStation42 Guide':fontcolor=green:fontsize=60:x=(w-text_w)/2:y=50",
 		"-f", "mp4",
 		"-vcodec", "libx264",
-		"-preset", "veryfast",
-		"-tune", "zerolatency",
+		"-preset", "ultrafast",
 		"-b:v", "500k",
-		"-bufsize", "1M",
-		"-maxrate", "500k",
-		"-g", "30",
-		"-keyint_min", "30",
-		"-sc_threshold", "0",
-		"-movflags", "frag_keyframe+empty_moov+default_base_moof",
+		"-movflags", "frag_keyframe+empty_moov",
 		"-y",
 		"-loglevel", "error",
 		"pipe:1",
 	}
 
+	w.logger.Printf("Starting guide stream with ffmpeg")
 	cmd := exec.Command(ffmpegCmd[0], ffmpegCmd[1:]...)
-	cmd.Stderr = os.Stderr
+
+	// Capture stderr for debugging
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		w.logger.Printf("Failed to create stderr pipe: %v", err)
+		http.Error(resp, "Failed to create guide stream pipe", http.StatusInternalServerError)
+		return
+	}
+
 	pipe, err := cmd.StdoutPipe()
 	if err != nil {
+		w.logger.Printf("Failed to create stdout pipe: %v", err)
 		http.Error(resp, "Failed to create guide stream pipe", http.StatusInternalServerError)
 		return
 	}
 
 	if err := cmd.Start(); err != nil {
+		w.logger.Printf("Failed to start guide ffmpeg: %v", err)
 		http.Error(resp, "Failed to start guide ffmpeg", http.StatusInternalServerError)
 		return
 	}
@@ -753,18 +782,31 @@ func (w *WebFieldPlayer) handleGuideStream(resp http.ResponseWriter, req *http.R
 			_ = cmd.Process.Kill()
 		}()
 
+		// Log stderr for debugging
+		go func() {
+			scanner := bufio.NewScanner(stderr)
+			for scanner.Scan() {
+				w.logger.Printf("ffmpeg stderr: %s", scanner.Text())
+			}
+		}()
+
 		buffer := make([]byte, 1024*1024)
+		totalBytes := 0
 		for {
 			n, err := pipe.Read(buffer)
 			if n > 0 {
+				totalBytes += n
 				if _, writeErr := resp.Write(buffer[:n]); writeErr != nil {
+					w.logger.Printf("Failed to write to response: %v", writeErr)
 					break
 				}
 			}
 			if err != nil {
+				w.logger.Printf("Pipe read error: %v", err)
 				break
 			}
 		}
+		w.logger.Printf("Guide stream ended, total bytes sent: %d", totalBytes)
 	}()
 }
 
@@ -1158,6 +1200,17 @@ func (p *WebStationPlayer) showGuide(guideConfig *StationConfig) *PlayerOutcome 
 	// Set up guide video stream
 	p.currentStreamURL = "/guide_stream"
 	p.currentPlayingFilePath = "guide_stream"
+
+	// Simulate playing for 30 seconds before checking for channel changes
+	// This prevents the infinite loop
+	time.Sleep(30 * time.Second)
+
+	// Check for channel change
+	response := checkChannelSocket()
+	if response != nil {
+		return response
+	}
+
 	return &PlayerOutcome{Status: PlayStatusSuccess}
 }
 
