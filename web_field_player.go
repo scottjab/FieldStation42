@@ -552,12 +552,26 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 		}
 		inputSource = fmt.Sprintf("color=black:size=1280x720:rate=30:duration=30,drawtext=text='%s':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2", stationName)
 	default:
-		// Local file
+		// Check if it's a local file path
 		if _, err := os.Stat(filePath); err != nil {
-			http.Error(resp, "File not found", http.StatusNotFound)
-			return
+			// Try to find the file in the station's content directory
+			if w.player.stationConfig != nil && w.player.stationConfig.ContentDir != "" {
+				contentPath := filepath.Join(w.player.stationConfig.ContentDir, filepath.Base(filePath))
+				if _, err := os.Stat(contentPath); err == nil {
+					inputSource = contentPath
+				} else {
+					w.logger.Printf("File not found: %s or %s", filePath, contentPath)
+					http.Error(resp, "File not found", http.StatusNotFound)
+					return
+				}
+			} else {
+				w.logger.Printf("File not found: %s", filePath)
+				http.Error(resp, "File not found", http.StatusNotFound)
+				return
+			}
+		} else {
+			inputSource = filePath
 		}
-		inputSource = filePath
 	}
 
 	w.logger.Printf("handleLiveStream: ffmpeg will use inputSource='%s' (original filePath='%s')", inputSource, filePath)
@@ -1131,13 +1145,34 @@ func (p *WebStationPlayer) showGuide(guideConfig *StationConfig) *PlayerOutcome 
 }
 
 func (p *WebStationPlayer) playSlot(networkName string, when time.Time) *PlayerOutcome {
-	// Set up a placeholder stream URL for standard channels
-	p.currentStreamURL = "/live"
-	p.currentPlayingFilePath = "placeholder"
+	// Get the actual scheduled content using Go-native scheduling
+	playPoint, err := p.getPlayPointFromSchedule(networkName, when)
+	if err != nil {
+		p.logger.Printf("Failed to get play point from schedule: %v", err)
+		// Fall back to placeholder if scheduling fails
+		p.currentStreamURL = "/live"
+		p.currentPlayingFilePath = "placeholder"
+		time.Sleep(30 * time.Second)
+		return &PlayerOutcome{Status: PlayStatusSuccess}
+	}
 
-	// Simulate playing for 30 seconds before checking for channel changes
-	// This prevents the infinite loop
-	time.Sleep(30 * time.Second)
+	// Use the actual scheduled content
+	if len(playPoint.Plan) > 0 && playPoint.Index < len(playPoint.Plan) {
+		entry := playPoint.Plan[playPoint.Index]
+		p.currentPlayingFilePath = entry.Path
+		p.currentStreamURL = "/live"
+
+		// Calculate how long to play this content
+		duration := entry.Duration - playPoint.Offset
+		if duration > 0 {
+			time.Sleep(time.Duration(duration) * time.Second)
+		}
+	} else {
+		// No content available, use placeholder
+		p.currentStreamURL = "/live"
+		p.currentPlayingFilePath = "placeholder"
+		time.Sleep(30 * time.Second)
+	}
 
 	// Check for channel change
 	response := checkChannelSocket()
@@ -1146,6 +1181,84 @@ func (p *WebStationPlayer) playSlot(networkName string, when time.Time) *PlayerO
 	}
 
 	return &PlayerOutcome{Status: PlayStatusSuccess}
+}
+
+// getPlayPointFromSchedule implements a simplified scheduling system in Go
+func (p *WebStationPlayer) getPlayPointFromSchedule(networkName string, when time.Time) (*PlayPoint, error) {
+	// Use the current station configuration
+	if p.stationConfig == nil {
+		return nil, fmt.Errorf("no station configuration available")
+	}
+
+	// For now, implement a simple content selection based on time and content directory
+	// This is a simplified version that just picks content from the content directory
+	if p.stationConfig.ContentDir != "" {
+		contentFiles, err := p.getContentFiles(p.stationConfig.ContentDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get content files: %v", err)
+		}
+
+		if len(contentFiles) > 0 {
+			// Simple round-robin selection based on time
+			index := int(when.Unix()/3600) % len(contentFiles) // Change every hour
+			selectedFile := contentFiles[index]
+
+			// Create a simple play point with the selected content
+			playPoint := &PlayPoint{
+				Index:  0,
+				Offset: 0,
+				Plan: []PlayEntry{
+					{
+						Path:     selectedFile,
+						Duration: 3600, // Assume 1 hour duration
+						Skip:     0,
+						IsStream: false,
+					},
+				},
+			}
+
+			return playPoint, nil
+		}
+	}
+
+	// If no content found, return a placeholder
+	return &PlayPoint{
+		Index:  0,
+		Offset: 0,
+		Plan: []PlayEntry{
+			{
+				Path:     "placeholder",
+				Duration: 30,
+				Skip:     0,
+				IsStream: false,
+			},
+		},
+	}, nil
+}
+
+// getContentFiles scans a content directory for video files
+func (p *WebStationPlayer) getContentFiles(contentDir string) ([]string, error) {
+	var files []string
+
+	entries, err := os.ReadDir(contentDir)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			name := entry.Name()
+			// Check for common video file extensions
+			if strings.HasSuffix(strings.ToLower(name), ".mp4") ||
+				strings.HasSuffix(strings.ToLower(name), ".avi") ||
+				strings.HasSuffix(strings.ToLower(name), ".mkv") ||
+				strings.HasSuffix(strings.ToLower(name), ".mov") {
+				files = append(files, filepath.Join(contentDir, name))
+			}
+		}
+	}
+
+	return files, nil
 }
 
 // Utility functions
