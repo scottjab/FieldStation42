@@ -560,6 +560,76 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 
 	filePath := w.player.currentPlayingFilePath
 
+	// If it's a placeholder, generate a simple video
+	if filePath == "placeholder" {
+		w.logger.Println("Generating placeholder video for standard channel")
+
+		stationName := "Unknown"
+		if w.player.stationConfig != nil {
+			stationName = w.player.stationConfig.NetworkName
+		}
+
+		ffmpegCmd := []string{
+			"ffmpeg",
+			"-f", "lavfi",
+			"-i", fmt.Sprintf("color=black:size=1280x720:rate=1:duration=3600,drawtext=text='%s':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2:font=monospace", stationName),
+			"-f", "mp4",
+			"-vcodec", "libx264",
+			"-preset", "veryfast",
+			"-tune", "zerolatency",
+			"-b:v", "500k",
+			"-bufsize", "1M",
+			"-maxrate", "500k",
+			"-g", "30",
+			"-keyint_min", "30",
+			"-sc_threshold", "0",
+			"-movflags", "frag_keyframe+empty_moov+default_base_moof",
+			"-y",
+			"-loglevel", "error",
+			"pipe:1",
+		}
+
+		w.logger.Printf("Running placeholder ffmpeg command: %s", strings.Join(ffmpegCmd, " "))
+
+		cmd := exec.Command(ffmpegCmd[0], ffmpegCmd[1:]...)
+		cmd.Stderr = os.Stderr
+		pipe, err := cmd.StdoutPipe()
+		if err != nil {
+			http.Error(resp, "Failed to create placeholder stream pipe", http.StatusInternalServerError)
+			return
+		}
+
+		if err := cmd.Start(); err != nil {
+			http.Error(resp, "Failed to start placeholder ffmpeg", http.StatusInternalServerError)
+			return
+		}
+
+		resp.Header().Set("Content-Type", "video/mp4")
+		resp.Header().Set("Cache-Control", "no-cache")
+		resp.Header().Set("Connection", "keep-alive")
+
+		// Stream the placeholder video
+		go func() {
+			defer func() {
+				_ = cmd.Process.Kill()
+			}()
+
+			buffer := make([]byte, 1024*1024)
+			for {
+				n, err := pipe.Read(buffer)
+				if n > 0 {
+					if _, writeErr := resp.Write(buffer[:n]); writeErr != nil {
+						break
+					}
+				}
+				if err != nil {
+					break
+				}
+			}
+		}()
+		return
+	}
+
 	// Kill any existing stream process
 	w.streamMutex.Lock()
 	if w.currentStreamProcess != nil {
@@ -1120,8 +1190,27 @@ func (p *WebStationPlayer) schedulePanic(networkName string) {
 }
 
 func (p *WebStationPlayer) playSlot(networkName string, when time.Time) *PlayerOutcome {
-	// Simplified implementation - in a real version this would use the liquid manager
-	// For now, just return success
+	p.logger.Printf("playSlot called for %s at %v", networkName, when)
+
+	// For now, simulate playing content for a reasonable duration
+	// In a real implementation, this would use the liquid manager to get actual content
+
+	// Set up a placeholder stream URL for standard channels
+	p.currentStreamURL = "/live"
+	p.currentPlayingFilePath = "placeholder"
+	p.logger.Printf("Set up placeholder content for %s", networkName)
+
+	// Simulate playing for 30 seconds before checking for channel changes
+	// This prevents the infinite loop
+	time.Sleep(30 * time.Second)
+
+	// Check for channel change
+	response := checkChannelSocket()
+	if response != nil {
+		p.logger.Printf("Channel change detected during playSlot")
+		return response
+	}
+
 	return &PlayerOutcome{Status: PlayStatusSuccess}
 }
 
