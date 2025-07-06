@@ -707,6 +707,13 @@ func (w *WebFieldPlayer) handleStream(resp http.ResponseWriter, req *http.Reques
 
 	filePath := w.player.currentPlayingFilePath
 
+	// Check if GStreamer is available
+	if _, err := exec.LookPath("gst-launch-1.0"); err != nil {
+		// GStreamer not available, use simple video approach
+		w.handleSimpleVideo(resp, req, filePath)
+		return
+	}
+
 	// Check if this is a request for the HLS playlist
 	if strings.HasSuffix(req.URL.Path, ".m3u8") {
 		w.handleGStreamerHLSPlaylist(resp, req, filePath)
@@ -719,7 +726,7 @@ func (w *WebFieldPlayer) handleStream(resp http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	// Fallback: use simple video file approach
+	// Default: use simple video approach
 	w.handleSimpleVideo(resp, req, filePath)
 }
 
@@ -1060,9 +1067,9 @@ func (w *WebFieldPlayer) getHTMLInterface() string {
                 document.getElementById('showTitle').textContent = status.title || '';
                 document.getElementById('receptionBar').style.width = (status.reception_quality * 100) + '%';
                 
-                // Use the GStreamer HLS streaming endpoint
+                // Use the simple video streaming endpoint
                 const video = document.getElementById('videoPlayer');
-                const streamSrc = '/stream/playlist.m3u8';
+                const streamSrc = '/stream';
                 if (video.src !== streamSrc) {
                     video.src = streamSrc;
                     video.load();
