@@ -560,6 +560,8 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 		inputSource = filePath
 	}
 
+	w.logger.Printf("handleLiveStream: ffmpeg will use inputSource='%s' (original filePath='%s')", inputSource, filePath)
+
 	// Generate video file
 	var ffmpegCmd []string
 	switch filePath {
