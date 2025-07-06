@@ -95,6 +95,16 @@ in
   # Individual components
   inherit fieldPlayer station convertSchedules webFieldPlayer webFieldPlayerGo;
 
+  # Export packages with the names that the host configuration expects
+  packages = {
+    fieldPlayer = fieldPlayer;
+    station = station;
+    convertSchedules = convertSchedules;
+    webFieldPlayer = webFieldPlayer;
+    web-field-player = webFieldPlayer;
+    convert_schedules = convertSchedules;
+  };
+
   # Development environment
   devShell = pkgs.mkShell {
     buildInputs = with pkgs; [
