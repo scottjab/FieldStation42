@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
@@ -114,16 +113,6 @@ var (
 // WebSocket implementation using standard library
 // generateWebSocketKey generates a random WebSocket key for the upgrade handshake
 // This function is currently unused but kept for potential future use
-func generateWebSocketKey() string {
-	bytes := make([]byte, 16)
-	if _, err := rand.Read(bytes); err != nil {
-		// In a real application, you might want to handle this error
-		// For now, we'll just use a fallback
-		return "fallback-key-12345"
-	}
-	return base64.StdEncoding.EncodeToString(bytes)
-}
-
 func computeWebSocketAccept(key string) string {
 	hash := sha1.New()
 	hash.Write([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
@@ -452,7 +441,7 @@ func (w *WebFieldPlayer) startServer() error {
 	mux.HandleFunc("/api/channel/up", w.handleChannelUp)
 	mux.HandleFunc("/api/channel/down", w.handleChannelDown)
 	mux.HandleFunc("/live", w.handleLiveStream)
-	mux.HandleFunc("/stream", w.handleStream)
+	mux.HandleFunc("/stream/", w.handleStream)
 	mux.HandleFunc("/guide", w.handleGuide)
 	mux.HandleFunc("/test", w.handleTestVideo)
 	mux.HandleFunc("/ws", w.handleWebSocket)
@@ -547,15 +536,16 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 
 	// Determine the input source based on filePath
 	var inputSource string
-	if filePath == "guide_stream" {
+	switch filePath {
+	case "guide_stream":
 		inputSource = "color=black:size=1280x720:rate=30:duration=30"
-	} else if filePath == "placeholder" {
+	case "placeholder":
 		stationName := "Unknown"
 		if w.player.stationConfig != nil {
 			stationName = w.player.stationConfig.NetworkName
 		}
 		inputSource = fmt.Sprintf("color=black:size=1280x720:rate=30:duration=30,drawtext=text='%s':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2", stationName)
-	} else {
+	default:
 		// Local file
 		if _, err := os.Stat(filePath); err != nil {
 			http.Error(resp, "File not found", http.StatusNotFound)
@@ -699,23 +689,135 @@ func (w *WebFieldPlayer) handleStream(resp http.ResponseWriter, req *http.Reques
 
 	filePath := w.player.currentPlayingFilePath
 
-	// Set up headers for streaming
-	resp.Header().Set("Content-Type", "video/mp4")
-	resp.Header().Set("Cache-Control", "no-cache")
-	resp.Header().Set("Connection", "keep-alive")
-	resp.Header().Set("Transfer-Encoding", "chunked")
+	// Check if this is a request for the HLS playlist
+	if strings.HasSuffix(req.URL.Path, ".m3u8") {
+		w.handleGStreamerHLSPlaylist(resp, req, filePath)
+		return
+	}
 
-	// Determine the input source
+	// Check if this is a request for an HLS segment
+	if strings.HasSuffix(req.URL.Path, ".ts") {
+		w.handleGStreamerHLSSegment(resp, req, filePath)
+		return
+	}
+
+	// Fallback: use simple video file approach
+	w.handleSimpleVideo(resp, req, filePath)
+}
+
+func (w *WebFieldPlayer) handleGStreamerHLSPlaylist(resp http.ResponseWriter, req *http.Request, filePath string) {
+	w.logger.Printf("Generating GStreamer HLS playlist for: %s", filePath)
+
+	// Create HLS output directory
+	outputDir := "hls_output"
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		w.logger.Printf("Failed to create HLS output directory: %v", err)
+		http.Error(resp, "Failed to create output directory", http.StatusInternalServerError)
+		return
+	}
+
+	// Kill any existing GStreamer process
+	w.streamMutex.Lock()
+	if w.currentStreamProcess != nil {
+		_ = w.currentStreamProcess.Process.Kill()
+		w.currentStreamProcess = nil
+	}
+
+	// Determine the input source based on filePath
 	var inputSource string
-	if filePath == "guide_stream" {
+	switch filePath {
+	case "guide_stream":
+		inputSource = "videotestsrc pattern=ball ! video/x-raw,width=1280,height=720,framerate=30/1"
+	case "placeholder":
+		stationName := "Unknown"
+		if w.player.stationConfig != nil {
+			stationName = w.player.stationConfig.NetworkName
+		}
+		inputSource = fmt.Sprintf("videotestsrc pattern=ball ! video/x-raw,width=1280,height=720,framerate=30/1 ! videoconvert ! textoverlay text='%s' font-desc='Sans 60' valignment=center halignment=center", stationName)
+	default:
+		// Local file
+		if _, err := os.Stat(filePath); err != nil {
+			w.streamMutex.Unlock()
+			http.Error(resp, "File not found", http.StatusNotFound)
+			return
+		}
+		inputSource = fmt.Sprintf("filesrc location=%s ! decodebin", filePath)
+	}
+
+	// GStreamer pipeline for HLS streaming
+	gstPipeline := fmt.Sprintf(`
+		gst-launch-1.0 -q %s ! \
+		videoconvert ! x264enc tune=zerolatency bitrate=1000 ! h264parse ! \
+		mpegtsmux ! hlssink2 location=%s/stream_%%05d.ts playlist-location=%s/playlist.m3u8 \
+		playlist-length=5 max-files=10 target-duration=2
+	`, inputSource, outputDir, outputDir)
+
+	w.logger.Printf("Starting GStreamer HLS pipeline")
+	w.currentStreamProcess = exec.Command("bash", "-c", gstPipeline)
+	w.currentStreamProcess.Stderr = os.Stderr
+
+	if err := w.currentStreamProcess.Start(); err != nil {
+		w.streamMutex.Unlock()
+		w.logger.Printf("Failed to start GStreamer: %v", err)
+		http.Error(resp, "Failed to start GStreamer", http.StatusInternalServerError)
+		return
+	}
+
+	// Wait a moment for GStreamer to start generating files
+	time.Sleep(2 * time.Second)
+
+	// Serve the playlist file
+	playlistPath := filepath.Join(outputDir, "playlist.m3u8")
+	if _, err := os.Stat(playlistPath); err != nil {
+		w.streamMutex.Unlock()
+		w.logger.Printf("HLS playlist not found: %v", err)
+		http.Error(resp, "HLS playlist not found", http.StatusInternalServerError)
+		return
+	}
+
+	resp.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	resp.Header().Set("Cache-Control", "no-cache")
+	resp.Header().Set("Access-Control-Allow-Origin", "*")
+	http.ServeFile(resp, req, playlistPath)
+	w.streamMutex.Unlock()
+}
+
+func (w *WebFieldPlayer) handleGStreamerHLSSegment(resp http.ResponseWriter, req *http.Request, filePath string) {
+	// Extract segment filename from URL
+	segmentName := filepath.Base(req.URL.Path)
+	segmentPath := filepath.Join("hls_output", segmentName)
+
+	if _, err := os.Stat(segmentPath); err != nil {
+		w.logger.Printf("HLS segment not found: %s", segmentPath)
+		http.Error(resp, "Segment not found", http.StatusNotFound)
+		return
+	}
+
+	resp.Header().Set("Content-Type", "video/mp2t")
+	resp.Header().Set("Cache-Control", "public, max-age=3600")
+	resp.Header().Set("Access-Control-Allow-Origin", "*")
+	http.ServeFile(resp, req, segmentPath)
+}
+
+func (w *WebFieldPlayer) handleSimpleVideo(resp http.ResponseWriter, req *http.Request, filePath string) {
+	w.logger.Printf("Generating simple video for: %s", filePath)
+
+	// Create a simple video file that browsers can handle
+	videoFile := "current_video.mp4"
+
+	// Determine the input source based on filePath
+	var inputSource string
+	switch filePath {
+	case "guide_stream":
 		inputSource = "color=black:size=1280x720:rate=30:duration=30"
-	} else if filePath == "placeholder" {
+	case "placeholder":
 		stationName := "Unknown"
 		if w.player.stationConfig != nil {
 			stationName = w.player.stationConfig.NetworkName
 		}
 		inputSource = fmt.Sprintf("color=black:size=1280x720:rate=30:duration=30,drawtext=text='%s':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2", stationName)
-	} else {
+	default:
+		// Local file
 		if _, err := os.Stat(filePath); err != nil {
 			http.Error(resp, "File not found", http.StatusNotFound)
 			return
@@ -723,14 +825,14 @@ func (w *WebFieldPlayer) handleStream(resp http.ResponseWriter, req *http.Reques
 		inputSource = filePath
 	}
 
-	// Kill any existing stream process
+	// Kill any existing process
 	w.streamMutex.Lock()
 	if w.currentStreamProcess != nil {
 		_ = w.currentStreamProcess.Process.Kill()
 		w.currentStreamProcess = nil
 	}
 
-	// Start ffmpeg process for streaming
+	// Generate video file with ffmpeg
 	ffmpegCmd := []string{
 		"ffmpeg",
 		"-i", inputSource,
@@ -739,74 +841,45 @@ func (w *WebFieldPlayer) handleStream(resp http.ResponseWriter, req *http.Reques
 		"-preset", "ultrafast",
 		"-b:v", "1000k",
 		"-b:a", "128k",
-		"-movflags", "frag_keyframe+empty_moov",
-		"-f", "mp4",
 		"-y",
 		"-loglevel", "error",
-		"pipe:1",
+		videoFile,
 	}
 
-	w.logger.Printf("Starting efficient stream for: %s", filePath)
+	w.logger.Printf("Generating video file with ffmpeg")
 	w.currentStreamProcess = exec.Command(ffmpegCmd[0], ffmpegCmd[1:]...)
 	w.currentStreamProcess.Stderr = os.Stderr
 
-	pipe, err := w.currentStreamProcess.StdoutPipe()
-	if err != nil {
-		w.streamMutex.Unlock()
-		http.Error(resp, "Failed to create stream pipe", http.StatusInternalServerError)
-		return
-	}
-
 	if err := w.currentStreamProcess.Start(); err != nil {
 		w.streamMutex.Unlock()
-		http.Error(resp, "Failed to start ffmpeg", http.StatusInternalServerError)
+		w.logger.Printf("Failed to start ffmpeg: %v", err)
+		http.Error(resp, "Failed to generate video", http.StatusInternalServerError)
 		return
 	}
 
-	resp.WriteHeader(http.StatusOK)
+	// Wait for the process to complete
+	if err := w.currentStreamProcess.Wait(); err != nil {
+		w.streamMutex.Unlock()
+		w.logger.Printf("ffmpeg failed: %v", err)
+		http.Error(resp, "Failed to generate video", http.StatusInternalServerError)
+		return
+	}
 
-	// Stream the video data
-	go func() {
-		defer w.streamMutex.Unlock()
-		defer func() {
-			if r := recover(); r != nil {
-				w.logger.Printf("Panic in stream goroutine: %v", r)
-			}
-			if w.currentStreamProcess != nil {
-				_ = w.currentStreamProcess.Process.Kill()
-				w.currentStreamProcess = nil
-			}
-		}()
+	// Check if file was created
+	if _, err := os.Stat(videoFile); err != nil {
+		w.streamMutex.Unlock()
+		w.logger.Printf("Video file not found: %v", err)
+		http.Error(resp, "Video file not found", http.StatusInternalServerError)
+		return
+	}
 
-		buffer := make([]byte, 4096)
-		for {
-			// Check if client disconnected
-			select {
-			case <-req.Context().Done():
-				w.logger.Printf("Client disconnected, stopping stream")
-				return
-			default:
-			}
-
-			n, err := pipe.Read(buffer)
-			if n > 0 {
-				if _, writeErr := resp.Write(buffer[:n]); writeErr != nil {
-					w.logger.Printf("Failed to write to response: %v", writeErr)
-					return
-				}
-				// Flush the response
-				if flusher, ok := resp.(http.Flusher); ok {
-					flusher.Flush()
-				}
-			}
-			if err != nil {
-				if err != io.EOF {
-					w.logger.Printf("Error reading from pipe: %v", err)
-				}
-				return
-			}
-		}
-	}()
+	// Serve the file directly
+	w.logger.Printf("Serving video file: %s", videoFile)
+	resp.Header().Set("Content-Type", "video/mp4")
+	resp.Header().Set("Cache-Control", "no-cache")
+	resp.Header().Set("Access-Control-Allow-Origin", "*")
+	http.ServeFile(resp, req, videoFile)
+	w.streamMutex.Unlock()
 }
 
 func (w *WebFieldPlayer) getHTMLInterface() string {
@@ -951,9 +1024,9 @@ func (w *WebFieldPlayer) getHTMLInterface() string {
                 document.getElementById('showTitle').textContent = status.title || '';
                 document.getElementById('receptionBar').style.width = (status.reception_quality * 100) + '%';
                 
-                // Use the efficient streaming endpoint
+                // Use the GStreamer HLS streaming endpoint
                 const video = document.getElementById('videoPlayer');
-                const streamSrc = '/stream';
+                const streamSrc = '/stream/playlist.m3u8';
                 if (video.src !== streamSrc) {
                     video.src = streamSrc;
                     video.load();
@@ -1133,17 +1206,6 @@ func (p *WebStationPlayer) updateFilters() {
 	// They would need to be applied at the video source level
 }
 
-// updateReception improves the reception quality over time
-// This function is currently unused but kept for potential future use
-func (p *WebStationPlayer) updateReception() {
-	if p.receptionQuality < 1.0 {
-		p.receptionQuality += 0.01
-		if p.receptionQuality > 1.0 {
-			p.receptionQuality = 1.0
-		}
-	}
-}
-
 func (p *WebStationPlayer) playFile(filePath string, fileDuration *int, currentTime *int, isStream bool) bool {
 	p.logger.Printf("Attempting to play %s", filePath)
 
@@ -1206,14 +1268,6 @@ func (p *WebStationPlayer) showGuide(guideConfig *StationConfig) *PlayerOutcome 
 	return &PlayerOutcome{Status: PlayStatusSuccess}
 }
 
-// schedulePanic handles schedule generation when a schedule is not found
-// This function is currently unused but kept for potential future use
-func (p *WebStationPlayer) schedulePanic(networkName string) {
-	p.logger.Printf("Schedule not found for %s - attempting to generate a one-day extension", networkName)
-	// In a real implementation, this would generate a schedule
-	p.logger.Printf("Schedule extended for %s - reloading schedules now", networkName)
-}
-
 func (p *WebStationPlayer) playSlot(networkName string, when time.Time) *PlayerOutcome {
 	// Set up a placeholder stream URL for standard channels
 	p.currentStreamURL = "/live"
@@ -1229,62 +1283,6 @@ func (p *WebStationPlayer) playSlot(networkName string, when time.Time) *PlayerO
 		return response
 	}
 
-	return &PlayerOutcome{Status: PlayStatusSuccess}
-}
-
-// playFromPoint plays content from a specific play point
-// This function is currently unused but kept for potential future use
-func (p *WebStationPlayer) playFromPoint(playPoint *PlayPoint) *PlayerOutcome {
-	if len(playPoint.Plan) == 0 {
-		p.currentPlayingFilePath = ""
-		return &PlayerOutcome{Status: PlayStatusFailed, Payload: "No plan entries"}
-	}
-
-	initialSkip := playPoint.Offset
-
-	// Iterate over the slice from index to end
-	for i := playPoint.Index; i < len(playPoint.Plan); i++ {
-		entry := playPoint.Plan[i]
-		p.logger.Printf("Playing entry %v", entry)
-		p.logger.Printf("Initial Skip: %d", initialSkip)
-		totalSkip := entry.Skip + initialSkip
-
-		p.playFile(entry.Path, &entry.Duration, &totalSkip, entry.IsStream)
-
-		p.logger.Printf("Seeking for: %d", totalSkip)
-
-		if entry.Duration > 0 {
-			p.logger.Printf("Monitoring for: %d", entry.Duration-initialSkip)
-
-			// This is our main event loop
-			keepWaiting := true
-			stopTime := time.Now().Add(time.Duration(entry.Duration-initialSkip) * time.Second)
-			for keepWaiting {
-				if !p.skipReceptionCheck {
-					p.updateReception()
-				}
-
-				now := time.Now()
-
-				if now.After(stopTime) {
-					keepWaiting = false
-				} else {
-					// Debounce time
-					time.Sleep(50 * time.Millisecond)
-					response := checkChannelSocket()
-					if response != nil {
-						return response
-					}
-				}
-			}
-		} else {
-			return &PlayerOutcome{Status: PlayStatusFailed}
-		}
-
-		initialSkip = 0
-	}
-
-	p.logger.Println("Done playing block")
 	return &PlayerOutcome{Status: PlayStatusSuccess}
 }
 
