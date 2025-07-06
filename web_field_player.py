@@ -268,13 +268,15 @@ class WebFieldPlayer:
         @self.app.get("/api/status")
         async def get_status():
             if self.player:
-                return {
+                status = {
                     "channel": self.manager.stations[self.current_channel_index]["channel_number"],
                     "name": self.manager.stations[self.current_channel_index]["network_name"],
                     "title": self.player.get_current_title() or "",
                     "stream_url": self.player.get_current_stream_url() or "",
                     "reception_quality": self.reception.quality
                 }
+                self.logger.debug(f"Status: {status}")
+                return status
             return {"channel": -1, "name": "", "title": "", "stream_url": "", "reception_quality": 0}
             
         @self.app.post("/api/channel/{channel_number}")
@@ -292,14 +294,18 @@ class WebFieldPlayer:
                 
         @self.app.post("/api/channel/up")
         async def channel_up():
+            self.logger.info(f"Channel UP requested. Current: {self.current_channel_index}, Total stations: {len(self.manager.stations)}")
             self.current_channel_index = (self.current_channel_index + 1) % len(self.manager.stations)
-            await self.switch_channel()
+            self.logger.info(f"New channel index: {self.current_channel_index}")
+            # Don't call switch_channel here as it's async and we're in a sync context
             return {"status": "ok", "channel": self.manager.stations[self.current_channel_index]["channel_number"]}
             
         @self.app.post("/api/channel/down")
         async def channel_down():
+            self.logger.info(f"Channel DOWN requested. Current: {self.current_channel_index}, Total stations: {len(self.manager.stations)}")
             self.current_channel_index = (self.current_channel_index - 1) % len(self.manager.stations)
-            await self.switch_channel()
+            self.logger.info(f"New channel index: {self.current_channel_index}")
+            # Don't call switch_channel here as it's async and we're in a sync context
             return {"status": "ok", "channel": self.manager.stations[self.current_channel_index]["channel_number"]}
             
         @self.app.websocket("/ws")
@@ -678,7 +684,8 @@ def main_loop(transition_fn, host="0.0.0.0", port=9191):
 
     # Create web player
     web_player = WebFieldPlayer(host=host, port=port)
-    player = WebStationPlayer(manager.stations[channel_index])
+    web_player.player = WebStationPlayer(manager.stations[channel_index])
+    player = web_player.player  # Use the same player instance
     reception.degrade()
     player.update_filters()
 
@@ -700,6 +707,11 @@ def main_loop(transition_fn, host="0.0.0.0", port=9191):
     
     logger.info(f"Web player started at http://{web_player.host}:{web_player.port}")
     logger.info("Open your browser to view the FieldStation42 web interface")
+    
+    # Debug: Show configured stations
+    logger.info(f"Configured stations: {len(manager.stations)}")
+    for i, station in enumerate(manager.stations):
+        logger.info(f"  {i}: {station['network_name']} (Channel {station['channel_number']}, Type: {station['network_type']})")
 
     # this is actually the main loop
     outcome = None
@@ -732,6 +744,16 @@ def main_loop(transition_fn, host="0.0.0.0", port=9191):
 
         # reset skip
         skip_play = False
+        
+        # Check if web interface requested a channel change
+        if web_player.current_channel_index != channel_index:
+            logger.info(f"Web interface requested channel change from {channel_index} to {web_player.current_channel_index}")
+            channel_index = web_player.current_channel_index
+            channel_conf = manager.stations[channel_index]
+            web_player.player = WebStationPlayer(manager.stations[channel_index])
+            player = web_player.player
+            transition_fn(player, reception)
+            continue
 
         if outcome.status == PlayStatus.CHANNEL_CHANGE:
             stuck_timer = 0
@@ -787,7 +809,8 @@ def main_loop(transition_fn, host="0.0.0.0", port=9191):
 
             # Update web player
             web_player.current_channel_index = channel_index
-            asyncio.run(web_player.switch_channel())
+            web_player.player = WebStationPlayer(manager.stations[channel_index])
+            player = web_player.player  # Update the player reference
 
             # long_change_effect(player, reception)
             transition_fn(player, reception)
