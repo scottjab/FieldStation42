@@ -46,10 +46,14 @@ class WebStationPlayer:
         self.reception = ReceptionStatus()
         self.skip_reception_check = False
         self.scrambler = None
+        self.current_process = None
         
     def shutdown(self):
         self.current_playing_file_path = None
         self.current_stream_url = None
+        if self.current_process:
+            self.current_process.kill()
+            self.current_process = None
         
     def update_filters(self):
         # Web player doesn't apply video filters directly
@@ -65,6 +69,11 @@ class WebStationPlayer:
             if os.path.exists(file_path) or is_stream:
                 self._l.debug(f"%%%Attempting to play {file_path}")
                 self.current_playing_file_path = file_path
+                
+                # Kill any existing stream
+                if self.current_process:
+                    self.current_process.kill()
+                    self.current_process = None
                 
                 # For web streaming, we need to serve the video file via HTTP
                 if is_stream:
@@ -237,6 +246,7 @@ class WebFieldPlayer:
         self.current_channel_index = 0
         self.websocket_connections = []
         self.running = False
+        self.current_stream_process = None
         
         # Setup CORS for web interface
         self.app.add_middleware(
@@ -246,8 +256,6 @@ class WebFieldPlayer:
             allow_methods=["*"],
             allow_headers=["*"],
         )
-        
-        # No static files needed - everything is served inline
         
         # Setup routes
         self.setup_routes()
@@ -271,7 +279,7 @@ class WebFieldPlayer:
                 return status
             return {"channel": -1, "name": "", "title": "", "stream_url": "", "reception_quality": 0}
             
-        @self.app.post("/api/channel/{channel_number}")
+        @self.app.post("/api/channel/{channel_number}", response_model=dict)
         async def change_channel(channel_number: int):
             try:
                 new_index = self.manager.index_from_channel(channel_number)
@@ -311,7 +319,7 @@ class WebFieldPlayer:
             except WebSocketDisconnect:
                 self.websocket_connections.remove(websocket)
                 
-        @self.app.get("/video/{filename}")
+        @self.app.get("/stream/{filename}")
         async def serve_video(filename: str):
             # Serve video files from the content directories
             for station in self.manager.stations:
@@ -320,6 +328,72 @@ class WebFieldPlayer:
                     if video_path.exists():
                         return FileResponse(str(video_path))
             raise HTTPException(status_code=404, detail="Video not found")
+            
+        @self.app.get("/live")
+        async def live_stream():
+            """Main live stream endpoint - serves whatever is currently playing"""
+            if not self.player or not self.player.current_playing_file_path:
+                # Return a placeholder or error
+                return HTMLResponse("No content currently playing", status_code=404)
+            
+            file_path = self.player.current_playing_file_path
+            
+            # Kill any existing stream process
+            if self.current_stream_process:
+                self.current_stream_process.kill()
+                self.current_stream_process = None
+            
+            # Check if it's a local file or external stream
+            if os.path.exists(file_path):
+                # Local file - transcode with ffmpeg
+                ffmpeg_cmd = [
+                    "ffmpeg",
+                    "-i", file_path,
+                    "-f", "mp4",
+                    "-vcodec", "libx264",
+                    "-acodec", "aac",
+                    "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+                    "-preset", "veryfast",
+                    "-tune", "zerolatency",
+                    "-b:v", "1M",
+                    "-bufsize", "2M",
+                    "-maxrate", "1M",
+                    "-analyzeduration", "100M",
+                    "-probesize", "100M",
+                    "-y",
+                    "-loglevel", "error",
+                    "pipe:1"
+                ]
+                
+                self.logger.info(f"Starting live stream for: {file_path}")
+                self.logger.info(f"Running ffmpeg command: {' '.join(ffmpeg_cmd)}")
+                
+                self.current_stream_process = subprocess.Popen(
+                    ffmpeg_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    bufsize=10**6
+                )
+                
+                def iterfile():
+                    try:
+                        while True:
+                            chunk = self.current_stream_process.stdout.read(1024*1024)
+                            if not chunk:
+                                break
+                            yield chunk
+                    finally:
+                        if self.current_stream_process:
+                            self.current_stream_process.stdout.close()
+                            self.current_stream_process.stderr.close()
+                            self.current_stream_process.kill()
+                            self.current_stream_process = None
+                
+                return StreamingResponse(iterfile(), media_type="video/mp4")
+            else:
+                # External stream - proxy it
+                # This would need to be implemented based on the stream type
+                return HTMLResponse("External streams not yet supported", status_code=501)
             
         @self.app.get("/guide")
         async def serve_guide():
@@ -391,66 +465,6 @@ class WebFieldPlayer:
             </body>
             </html>
             """)
-            
-        @self.app.get("/stream/{filename}")
-        async def stream_video(filename: str):
-            self.logger.info(f"Stream request for filename: {filename}")
-            # Find the file in the content directories
-            video_path = None
-            for station in self.manager.stations:
-                if "content_dir" in station:
-                    candidate = Path(station["content_dir"]) / filename
-                    self.logger.debug(f"Checking path: {candidate}")
-                    if candidate.exists():
-                        video_path = str(candidate)
-                        self.logger.info(f"Found video at: {video_path}")
-                        break
-            if not video_path:
-                self.logger.error(f"Video not found: {filename}")
-                raise HTTPException(status_code=404, detail="Video not found")
-
-            # ffmpeg command to transcode to H.264/AAC MP4 for browsers
-            ffmpeg_cmd = [
-                "ffmpeg",
-                "-i", video_path,
-                "-f", "mp4",
-                "-vcodec", "libx264",
-                "-acodec", "aac",
-                "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-                "-preset", "veryfast",
-                "-tune", "zerolatency",
-                "-b:v", "1M",
-                "-bufsize", "2M",
-                "-maxrate", "1M",
-                "-analyzeduration", "100M",
-                "-probesize", "100M",
-                "-y",
-                "-loglevel", "error",
-                "pipe:1"
-            ]
-
-            self.logger.info(f"Running ffmpeg command: {' '.join(ffmpeg_cmd)}")
-
-            process = subprocess.Popen(
-                ffmpeg_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=10**6
-            )
-
-            def iterfile():
-                try:
-                    while True:
-                        chunk = process.stdout.read(1024*1024)
-                        if not chunk:
-                            break
-                        yield chunk
-                finally:
-                    process.stdout.close()
-                    process.stderr.close()
-                    process.kill()
-
-            return StreamingResponse(iterfile(), media_type="video/mp4")
             
     def get_html_interface(self):
         return """
@@ -595,11 +609,10 @@ class WebFieldPlayer:
                 document.getElementById('showTitle').textContent = status.title || '';
                 document.getElementById('receptionBar').style.width = (status.reception_quality * 100) + '%';
                 
-                // Update video source if it changed
-                if (status.stream_url && status.stream_url !== currentStreamUrl) {
-                    currentStreamUrl = status.stream_url;
-                    const video = document.getElementById('videoPlayer');
-                    video.src = status.stream_url;
+                // Always use the live stream endpoint
+                const video = document.getElementById('videoPlayer');
+                if (video.src !== '/live') {
+                    video.src = '/live';
                     video.load();
                     video.play().catch(e => console.log('Auto-play prevented:', e));
                 }
