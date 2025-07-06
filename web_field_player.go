@@ -453,7 +453,6 @@ func (w *WebFieldPlayer) startServer() error {
 	mux.HandleFunc("/api/channel/down", w.handleChannelDown)
 	mux.HandleFunc("/live", w.handleLiveStream)
 	mux.HandleFunc("/guide", w.handleGuide)
-	mux.HandleFunc("/guide_stream", w.handleGuideStream)
 	mux.HandleFunc("/test", w.handleTestVideo)
 	mux.HandleFunc("/ws", w.handleWebSocket)
 
@@ -544,10 +543,13 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 	// If the current channel is a guide, generate the guide stream
 	if filePath == "guide_stream" {
 		w.logger.Printf("Generating guide video for guide channel")
+
+		// Generate a guide video file
+		tempFile := "temp_guide_video.mp4"
 		ffmpegCmd := []string{
 			"ffmpeg",
 			"-f", "lavfi",
-			"-i", "color=black:size=1280x720:rate=30:duration=3600",
+			"-i", "color=black:size=1280x720:rate=30:duration=30",
 			"-vf", "drawtext=text='FieldStation42 Guide':fontcolor=green:fontsize=60:x=(w-text_w)/2:y=50",
 			"-f", "mp4",
 			"-vcodec", "libx264",
@@ -555,79 +557,37 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 			"-preset", "ultrafast",
 			"-b:v", "1000k",
 			"-b:a", "128k",
-			"-movflags", "frag_keyframe+empty_moov",
 			"-y",
 			"-loglevel", "error",
-			"pipe:1",
+			tempFile,
 		}
-		w.logger.Printf("Starting guide stream with ffmpeg")
-		w.logger.Printf("Running ffmpeg command: %s", strings.Join(ffmpegCmd, " "))
+
+		w.logger.Printf("Generating guide video file with ffmpeg")
 		cmd := exec.Command(ffmpegCmd[0], ffmpegCmd[1:]...)
-		stderr, err := cmd.StderrPipe()
-		if err != nil {
-			w.logger.Printf("Failed to create stderr pipe: %v", err)
-			http.Error(resp, "Failed to create guide stream pipe", http.StatusInternalServerError)
+
+		if err := cmd.Run(); err != nil {
+			w.logger.Printf("Failed to generate guide video: %v", err)
+			http.Error(resp, "Failed to generate guide video", http.StatusInternalServerError)
 			return
 		}
-		pipe, err := cmd.StdoutPipe()
-		if err != nil {
-			w.logger.Printf("Failed to create stdout pipe: %v", err)
-			http.Error(resp, "Failed to create guide stream pipe", http.StatusInternalServerError)
+
+		// Check if file was created
+		if _, err := os.Stat(tempFile); err != nil {
+			w.logger.Printf("Guide video file not found: %v", err)
+			http.Error(resp, "Guide video file not found", http.StatusInternalServerError)
 			return
 		}
-		if err := cmd.Start(); err != nil {
-			w.logger.Printf("Failed to start guide ffmpeg: %v", err)
-			http.Error(resp, "Failed to start guide ffmpeg", http.StatusInternalServerError)
-			return
-		}
-		resp.Header().Set("Content-Type", "video/mp4")
-		resp.Header().Set("Cache-Control", "no-cache")
-		resp.Header().Set("Connection", "keep-alive")
-		resp.Header().Set("Transfer-Encoding", "chunked")
-		resp.WriteHeader(http.StatusOK)
+
+		// Serve the file directly
+		w.logger.Printf("Serving guide video file: %s", tempFile)
+		http.ServeFile(resp, req, tempFile)
+
+		// Clean up the file after serving
 		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					w.logger.Printf("Panic in guide stream goroutine: %v", r)
-				}
-				_ = cmd.Process.Kill()
-			}()
-			go func() {
-				scanner := bufio.NewScanner(stderr)
-				for scanner.Scan() {
-					w.logger.Printf("ffmpeg stderr: %s", scanner.Text())
-				}
-			}()
-			buffer := make([]byte, 4096)
-			totalBytes := 0
-			for {
-				// Check if request context is done (client disconnected)
-				select {
-				case <-req.Context().Done():
-					w.logger.Printf("Client disconnected, stopping guide stream")
-					return
-				default:
-				}
-
-				n, err := pipe.Read(buffer)
-				if n > 0 {
-					totalBytes += n
-
-					if _, writeErr := resp.Write(buffer[:n]); writeErr != nil {
-						w.logger.Printf("Failed to write to response: %v", writeErr)
-						break
-					}
-					// Check if response writer is still valid before flushing
-					if flusher, ok := resp.(http.Flusher); ok {
-						flusher.Flush()
-					}
-				}
-				if err != nil {
-					w.logger.Printf("Pipe read error: %v", err)
-					break
-				}
+			time.Sleep(5 * time.Second) // Give time for the file to be served
+			if err := os.Remove(tempFile); err != nil {
+				w.logger.Printf("Failed to remove guide temp file: %v", err)
 			}
-			w.logger.Printf("Guide stream ended, total bytes sent: %d", totalBytes)
 		}()
 		return
 	}
@@ -639,10 +599,13 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 		if w.player.stationConfig != nil {
 			stationName = w.player.stationConfig.NetworkName
 		}
+
+		// Generate a placeholder video file
+		tempFile := "temp_placeholder_video.mp4"
 		ffmpegCmd := []string{
 			"ffmpeg",
 			"-f", "lavfi",
-			"-i", "color=black:size=1280x720:rate=30:duration=3600",
+			"-i", "color=black:size=1280x720:rate=30:duration=30",
 			"-vf", fmt.Sprintf("drawtext=text='%s':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2", stationName),
 			"-f", "mp4",
 			"-vcodec", "libx264",
@@ -650,79 +613,37 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 			"-preset", "ultrafast",
 			"-b:v", "1000k",
 			"-b:a", "128k",
-			"-movflags", "frag_keyframe+empty_moov",
 			"-y",
 			"-loglevel", "error",
-			"pipe:1",
+			tempFile,
 		}
-		w.logger.Printf("Starting placeholder stream with ffmpeg")
-		w.logger.Printf("Running ffmpeg command: %s", strings.Join(ffmpegCmd, " "))
+
+		w.logger.Printf("Generating placeholder video file with ffmpeg")
 		cmd := exec.Command(ffmpegCmd[0], ffmpegCmd[1:]...)
-		stderr, err := cmd.StderrPipe()
-		if err != nil {
-			w.logger.Printf("Failed to create stderr pipe: %v", err)
-			http.Error(resp, "Failed to create placeholder stream pipe", http.StatusInternalServerError)
+
+		if err := cmd.Run(); err != nil {
+			w.logger.Printf("Failed to generate placeholder video: %v", err)
+			http.Error(resp, "Failed to generate placeholder video", http.StatusInternalServerError)
 			return
 		}
-		pipe, err := cmd.StdoutPipe()
-		if err != nil {
-			w.logger.Printf("Failed to create stdout pipe: %v", err)
-			http.Error(resp, "Failed to create placeholder stream pipe", http.StatusInternalServerError)
+
+		// Check if file was created
+		if _, err := os.Stat(tempFile); err != nil {
+			w.logger.Printf("Placeholder video file not found: %v", err)
+			http.Error(resp, "Placeholder video file not found", http.StatusInternalServerError)
 			return
 		}
-		if err := cmd.Start(); err != nil {
-			w.logger.Printf("Failed to start placeholder ffmpeg: %v", err)
-			http.Error(resp, "Failed to start placeholder ffmpeg", http.StatusInternalServerError)
-			return
-		}
-		resp.Header().Set("Content-Type", "video/mp4")
-		resp.Header().Set("Cache-Control", "no-cache")
-		resp.Header().Set("Connection", "keep-alive")
-		resp.Header().Set("Transfer-Encoding", "chunked")
-		resp.WriteHeader(http.StatusOK)
+
+		// Serve the file directly
+		w.logger.Printf("Serving placeholder video file: %s", tempFile)
+		http.ServeFile(resp, req, tempFile)
+
+		// Clean up the file after serving
 		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					w.logger.Printf("Panic in placeholder stream goroutine: %v", r)
-				}
-				_ = cmd.Process.Kill()
-			}()
-			go func() {
-				scanner := bufio.NewScanner(stderr)
-				for scanner.Scan() {
-					w.logger.Printf("ffmpeg stderr: %s", scanner.Text())
-				}
-			}()
-			buffer := make([]byte, 4096)
-			totalBytes := 0
-			for {
-				// Check if request context is done (client disconnected)
-				select {
-				case <-req.Context().Done():
-					w.logger.Printf("Client disconnected, stopping guide stream")
-					return
-				default:
-				}
-
-				n, err := pipe.Read(buffer)
-				if n > 0 {
-					totalBytes += n
-
-					if _, writeErr := resp.Write(buffer[:n]); writeErr != nil {
-						w.logger.Printf("Failed to write to response: %v", writeErr)
-						break
-					}
-					// Check if response writer is still valid before flushing
-					if flusher, ok := resp.(http.Flusher); ok {
-						flusher.Flush()
-					}
-				}
-				if err != nil {
-					w.logger.Printf("Pipe read error: %v", err)
-					break
-				}
+			time.Sleep(5 * time.Second) // Give time for the file to be served
+			if err := os.Remove(tempFile); err != nil {
+				w.logger.Printf("Failed to remove placeholder temp file: %v", err)
 			}
-			w.logger.Printf("Placeholder stream ended, total bytes sent: %d", totalBytes)
 		}()
 		return
 	}
@@ -819,113 +740,14 @@ func (w *WebFieldPlayer) handleGuide(resp http.ResponseWriter, req *http.Request
 	}
 }
 
-func (w *WebFieldPlayer) handleGuideStream(resp http.ResponseWriter, req *http.Request) {
-	w.logger.Printf("Guide stream request from %s", req.RemoteAddr)
-
-	// Use H.264 with proper streaming settings
-	ffmpegCmd := []string{
-		"ffmpeg",
-		"-f", "lavfi",
-		"-i", "color=black:size=1280x720:rate=30:duration=3600",
-		"-vf", "drawtext=text='FieldStation42 Guide':fontcolor=green:fontsize=60:x=(w-text_w)/2:y=50",
-		"-f", "mp4",
-		"-vcodec", "libx264",
-		"-acodec", "aac",
-		"-preset", "ultrafast",
-		"-b:v", "1000k",
-		"-b:a", "128k",
-		"-movflags", "frag_keyframe+empty_moov",
-		"-y",
-		"-loglevel", "error",
-		"pipe:1",
-	}
-
-	w.logger.Printf("Starting guide stream with ffmpeg")
-	w.logger.Printf("Running ffmpeg command: %s", strings.Join(ffmpegCmd, " "))
-	cmd := exec.Command(ffmpegCmd[0], ffmpegCmd[1:]...)
-
-	// Capture stderr for debugging
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		w.logger.Printf("Failed to create stderr pipe: %v", err)
-		http.Error(resp, "Failed to create guide stream pipe", http.StatusInternalServerError)
-		return
-	}
-
-	pipe, err := cmd.StdoutPipe()
-	if err != nil {
-		w.logger.Printf("Failed to create stdout pipe: %v", err)
-		http.Error(resp, "Failed to create guide stream pipe", http.StatusInternalServerError)
-		return
-	}
-
-	if err := cmd.Start(); err != nil {
-		w.logger.Printf("Failed to start guide ffmpeg: %v", err)
-		http.Error(resp, "Failed to start guide ffmpeg", http.StatusInternalServerError)
-		return
-	}
-
-	// Set proper streaming headers
-	resp.Header().Set("Content-Type", "video/mp4")
-	resp.Header().Set("Cache-Control", "no-cache")
-	resp.Header().Set("Connection", "keep-alive")
-	resp.Header().Set("Transfer-Encoding", "chunked")
-	resp.WriteHeader(http.StatusOK)
-
-	// Stream the guide video
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				w.logger.Printf("Panic in guide stream goroutine: %v", r)
-			}
-			_ = cmd.Process.Kill()
-		}()
-
-		// Log stderr for debugging
-		go func() {
-			scanner := bufio.NewScanner(stderr)
-			for scanner.Scan() {
-				w.logger.Printf("ffmpeg stderr: %s", scanner.Text())
-			}
-		}()
-
-		buffer := make([]byte, 4096)
-		totalBytes := 0
-		for {
-			// Check if request context is done (client disconnected)
-			select {
-			case <-req.Context().Done():
-				w.logger.Printf("Client disconnected, stopping guide stream")
-				return
-			default:
-			}
-
-			n, err := pipe.Read(buffer)
-			if n > 0 {
-				totalBytes += n
-
-				if _, writeErr := resp.Write(buffer[:n]); writeErr != nil {
-					w.logger.Printf("Failed to write to response: %v", writeErr)
-					break
-				}
-				// Check if response writer is still valid before flushing
-				if flusher, ok := resp.(http.Flusher); ok {
-					flusher.Flush()
-				}
-			}
-			if err != nil {
-				w.logger.Printf("Pipe read error: %v", err)
-				break
-			}
-		}
-		w.logger.Printf("Guide stream ended, total bytes sent: %d", totalBytes)
-	}()
-}
-
 func (w *WebFieldPlayer) handleTestVideo(resp http.ResponseWriter, req *http.Request) {
 	w.logger.Printf("Test video request from %s", req.RemoteAddr)
 
-	// Generate a simple test video with ffmpeg
+	// Try a simpler approach - generate a static video file first, then serve it
+	// This avoids the complexity of real-time MP4 streaming
+	tempFile := "temp_test_video.mp4"
+
+	// Generate a test video file
 	ffmpegCmd := []string{
 		"ffmpeg",
 		"-f", "lavfi",
@@ -934,64 +756,37 @@ func (w *WebFieldPlayer) handleTestVideo(resp http.ResponseWriter, req *http.Req
 		"-vcodec", "libx264",
 		"-preset", "ultrafast",
 		"-b:v", "1000k",
-		"-movflags", "frag_keyframe+empty_moov",
 		"-y",
 		"-loglevel", "error",
-		"pipe:1",
+		tempFile,
 	}
 
-	w.logger.Printf("Starting test video with ffmpeg")
+	w.logger.Printf("Generating test video file with ffmpeg")
 	cmd := exec.Command(ffmpegCmd[0], ffmpegCmd[1:]...)
 
-	pipe, err := cmd.StdoutPipe()
-	if err != nil {
-		w.logger.Printf("Failed to create test video pipe: %v", err)
-		http.Error(resp, "Failed to create test video pipe", http.StatusInternalServerError)
+	if err := cmd.Run(); err != nil {
+		w.logger.Printf("Failed to generate test video: %v", err)
+		http.Error(resp, "Failed to generate test video", http.StatusInternalServerError)
 		return
 	}
 
-	if err := cmd.Start(); err != nil {
-		w.logger.Printf("Failed to start test video ffmpeg: %v", err)
-		http.Error(resp, "Failed to start test video ffmpeg", http.StatusInternalServerError)
+	// Check if file was created
+	if _, err := os.Stat(tempFile); err != nil {
+		w.logger.Printf("Test video file not found: %v", err)
+		http.Error(resp, "Test video file not found", http.StatusInternalServerError)
 		return
 	}
 
-	resp.Header().Set("Content-Type", "video/mp4")
-	resp.Header().Set("Cache-Control", "no-cache")
-	resp.Header().Set("Connection", "keep-alive")
-	resp.Header().Set("Transfer-Encoding", "chunked")
-	resp.WriteHeader(http.StatusOK)
+	// Serve the file directly
+	w.logger.Printf("Serving test video file: %s", tempFile)
+	http.ServeFile(resp, req, tempFile)
 
+	// Clean up the file after serving
 	go func() {
-		defer func() { _ = cmd.Process.Kill() }()
-
-		buffer := make([]byte, 4096)
-		totalBytes := 0
-		for {
-			select {
-			case <-req.Context().Done():
-				w.logger.Printf("Client disconnected, stopping test video")
-				return
-			default:
-			}
-
-			n, err := pipe.Read(buffer)
-			if n > 0 {
-				totalBytes += n
-				if _, writeErr := resp.Write(buffer[:n]); writeErr != nil {
-					w.logger.Printf("Failed to write test video: %v", writeErr)
-					break
-				}
-				if flusher, ok := resp.(http.Flusher); ok {
-					flusher.Flush()
-				}
-			}
-			if err != nil {
-				w.logger.Printf("Test video pipe read error: %v", err)
-				break
-			}
+		time.Sleep(5 * time.Second) // Give time for the file to be served
+		if err := os.Remove(tempFile); err != nil {
+			w.logger.Printf("Failed to remove temp file: %v", err)
 		}
-		w.logger.Printf("Test video ended, total bytes sent: %d", totalBytes)
 	}()
 }
 
@@ -1406,8 +1201,8 @@ func (p *WebStationPlayer) getCurrentStreamURL() string {
 }
 
 func (p *WebStationPlayer) showGuide(guideConfig *StationConfig) *PlayerOutcome {
-	// Set up guide video stream
-	p.currentStreamURL = "/guide_stream"
+	// Set up guide video stream to use /live endpoint
+	p.currentStreamURL = "/live"
 	p.currentPlayingFilePath = "guide_stream"
 
 	// Simulate playing for 30 seconds before checking for channel changes
