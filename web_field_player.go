@@ -333,26 +333,95 @@ func main() {
 }
 
 func loadStationManager() (*StationManager, error) {
-	// Load server configuration
-	serverConfData, err := os.ReadFile("runtime/server.json")
-	if err != nil {
-		return nil, fmt.Errorf("failed to read server config: %w", err)
+	// Load server configuration from main_config.json if it exists
+	serverConf := ServerConfig{
+		ChannelSocket:  "runtime/channel.socket",
+		DateTimeFormat: "%Y-%m-%dT%H:%M:%S",
 	}
 
-	var serverConf ServerConfig
-	if err := json.Unmarshal(serverConfData, &serverConf); err != nil {
-		return nil, fmt.Errorf("failed to parse server config: %w", err)
+	mainConfigPath := "confs/main_config.json"
+	if data, err := os.ReadFile(mainConfigPath); err == nil {
+		var mainConfig map[string]interface{}
+		if err := json.Unmarshal(data, &mainConfig); err == nil {
+			if channelSocket, ok := mainConfig["channel_socket"].(string); ok {
+				serverConf.ChannelSocket = channelSocket
+			}
+			if dateTimeFormat, ok := mainConfig["date_time_format"].(string); ok {
+				serverConf.DateTimeFormat = dateTimeFormat
+			}
+		}
 	}
 
-	// Load stations configuration
-	stationsData, err := os.ReadFile("runtime/stations.json")
-	if err != nil {
-		return nil, fmt.Errorf("failed to read stations config: %w", err)
-	}
-
+	// Load station configurations from confs directory
 	var stations []StationConfig
-	if err := json.Unmarshal(stationsData, &stations); err != nil {
-		return nil, fmt.Errorf("failed to parse stations config: %w", err)
+	confsDir := "confs"
+
+	// Read all JSON files in confs directory
+	entries, err := os.ReadDir(confsDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read confs directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || entry.Name() == "main_config.json" {
+			continue
+		}
+
+		filePath := filepath.Join(confsDir, entry.Name())
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			log.Printf("Warning: failed to read %s: %v", filePath, err)
+			continue
+		}
+
+		var config map[string]interface{}
+		if err := json.Unmarshal(data, &config); err != nil {
+			log.Printf("Warning: failed to parse %s: %v", filePath, err)
+			continue
+		}
+
+		// Extract station_conf
+		stationConfData, ok := config["station_conf"]
+		if !ok {
+			log.Printf("Warning: no station_conf found in %s", filePath)
+			continue
+		}
+
+		// Convert to JSON and back to get proper struct
+		stationConfJSON, err := json.Marshal(stationConfData)
+		if err != nil {
+			log.Printf("Warning: failed to marshal station_conf from %s: %v", filePath, err)
+			continue
+		}
+
+		var station StationConfig
+		if err := json.Unmarshal(stationConfJSON, &station); err != nil {
+			log.Printf("Warning: failed to parse station_conf from %s: %v", filePath, err)
+			continue
+		}
+
+		// Set defaults for optional fields
+		if station.NetworkType == "" {
+			station.NetworkType = "standard"
+		}
+
+		// Validate required file paths if they exist in the config
+		if station.StandbyImage != "" {
+			if _, err := os.Stat(station.StandbyImage); os.IsNotExist(err) {
+				log.Printf("Warning: standby_image file does not exist: %s", station.StandbyImage)
+			}
+		}
+
+		stations = append(stations, station)
+	}
+
+	// Sort stations by channel number
+	for i := 0; i < len(stations)-1; i++ {
+		for j := i + 1; j < len(stations); j++ {
+			if stations[i].ChannelNumber > stations[j].ChannelNumber {
+				stations[i], stations[j] = stations[j], stations[i]
+			}
+		}
 	}
 
 	return &StationManager{

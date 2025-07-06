@@ -62,7 +62,7 @@ let
   # Go web field player binary wrapper
   webFieldPlayer = pkgs.writeScriptBin "web_field_player" ''
     #!${pkgs.bash}/bin/bash
-    ${webFieldPlayerGo}/bin/web-field-player "$@"
+    ${webFieldPlayerGo}/bin/fieldstation42 "$@"
   '';
 in
 
