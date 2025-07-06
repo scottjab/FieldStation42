@@ -129,17 +129,9 @@ class WebStationPlayer:
         """Show guide channel - adapted for web streaming instead of tkinter"""
         self._l.info("Starting guide channel for web player")
         
-        # For web player, we'll serve a static guide page or image
-        # instead of running a tkinter window
-        if "guide_image" in guide_config:
-            self.play_file(guide_config["guide_image"])
-        elif "guide_html" in guide_config:
-            # Could serve a custom HTML guide page
-            self.current_stream_url = "/guide"
-        else:
-            # Default: show a placeholder or static image
-            self.current_stream_url = "/static/guide_placeholder.png"
-            
+        # Set up guide video stream
+        self.current_stream_url = "/guide_stream"
+        
         # Run the guide loop like the original player
         keep_going = True
         while keep_going:
@@ -333,6 +325,57 @@ class WebFieldPlayer:
         async def serve_guide():
             """Serve guide channel content"""
             return HTMLResponse(self.get_guide_html())
+            
+        @self.app.get("/guide_stream")
+        async def stream_guide():
+            """Generate a dynamic guide video stream"""
+            self.logger.info("Generating guide video stream")
+            
+            # Create a simple animated guide using ffmpeg
+            # This creates a scrolling text guide with current time
+            current_time = datetime.datetime.now().strftime("%H:%M:%S")
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-f", "lavfi",
+                "-i", f"color=black:size=1280x720:rate=1:duration=3600,drawtext=text='FieldStation42 Guide':fontcolor=green:fontsize=60:x=(w-text_w)/2:y=50:font=monospace,drawtext=text='Current Time: {current_time}':fontcolor=green:fontsize=40:x=50:y=150:font=monospace,drawtext=text='Use CH UP/DOWN to navigate':fontcolor=green:fontsize=30:x=50:y=200:font=monospace",
+                "-f", "mp4",
+                "-vcodec", "libx264",
+                "-preset", "veryfast",
+                "-tune", "zerolatency",
+                "-b:v", "500k",
+                "-bufsize", "1M",
+                "-maxrate", "500k",
+                "-g", "30",
+                "-keyint_min", "30",
+                "-sc_threshold", "0",
+                "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+                "-y",
+                "-loglevel", "error",
+                "pipe:1"
+            ]
+
+            self.logger.info(f"Running guide ffmpeg command: {' '.join(ffmpeg_cmd)}")
+
+            process = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=10**6
+            )
+
+            def iterfile():
+                try:
+                    while True:
+                        chunk = process.stdout.read(1024*1024)
+                        if not chunk:
+                            break
+                        yield chunk
+                finally:
+                    process.stdout.close()
+                    process.stderr.close()
+                    process.kill()
+
+            return StreamingResponse(iterfile(), media_type="video/mp4")
             
         @self.app.get("/static/guide_placeholder.png")
         async def serve_guide_placeholder():
