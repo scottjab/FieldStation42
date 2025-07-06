@@ -128,7 +128,7 @@ class WebStationPlayer:
 class WebFieldPlayer:
     """Main web field player that manages the web interface and station switching"""
     
-    def __init__(self, host="0.0.0.0", port=8080):
+    def __init__(self, host="0.0.0.0", port=9191):
         self.host = host
         self.port = port
         self.logger = logging.getLogger("WebFieldPlayer")
@@ -459,7 +459,7 @@ class WebFieldPlayer:
         asyncio.run(self.start_server())
 
 
-def main_loop(transition_fn):
+def main_loop(transition_fn, host="0.0.0.0", port=9191):
     manager = StationManager()
     reception = ReceptionStatus()
     logger = logging.getLogger("MainLoop")
@@ -485,7 +485,7 @@ def main_loop(transition_fn):
         return
 
     # Create web player
-    web_player = WebFieldPlayer()
+    web_player = WebFieldPlayer(host=host, port=port)
     player = WebStationPlayer(manager.stations[channel_index])
     reception.degrade()
     player.update_filters()
@@ -698,8 +698,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--port",
         type=int,
-        default=8080,
-        help="Port to bind the web server to (default: 8080)",
+        default=9191,
+        help="Port to bind the web server to (default: 9191)",
     )
     args = parser.parse_args()
 
