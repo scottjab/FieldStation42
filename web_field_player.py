@@ -292,7 +292,7 @@ class WebFieldPlayer:
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
                 
-        @self.app.post("/api/channel/up")
+        @self.app.post("/api/channel/up", response_model=dict)
         async def channel_up():
             self.logger.info(f"Channel UP requested. Current: {self.current_channel_index}, Total stations: {len(self.manager.stations)}")
             self.current_channel_index = (self.current_channel_index + 1) % len(self.manager.stations)
@@ -300,7 +300,7 @@ class WebFieldPlayer:
             # Don't call switch_channel here as it's async and we're in a sync context
             return {"status": "ok", "channel": self.manager.stations[self.current_channel_index]["channel_number"]}
             
-        @self.app.post("/api/channel/down")
+        @self.app.post("/api/channel/down", response_model=dict)
         async def channel_down():
             self.logger.info(f"Channel DOWN requested. Current: {self.current_channel_index}, Total stations: {len(self.manager.stations)}")
             self.current_channel_index = (self.current_channel_index - 1) % len(self.manager.stations)
@@ -351,15 +351,19 @@ class WebFieldPlayer:
             
         @self.app.get("/stream/{filename}")
         async def stream_video(filename: str):
+            self.logger.info(f"Stream request for filename: {filename}")
             # Find the file in the content directories
             video_path = None
             for station in self.manager.stations:
                 if "content_dir" in station:
                     candidate = Path(station["content_dir"]) / filename
+                    self.logger.debug(f"Checking path: {candidate}")
                     if candidate.exists():
                         video_path = str(candidate)
+                        self.logger.info(f"Found video at: {video_path}")
                         break
             if not video_path:
+                self.logger.error(f"Video not found: {filename}")
                 raise HTTPException(status_code=404, detail="Video not found")
 
             # ffmpeg command to transcode to H.264/AAC MP4 for browsers
@@ -381,6 +385,8 @@ class WebFieldPlayer:
                 "-loglevel", "error",
                 "pipe:1"
             ]
+
+            self.logger.info(f"Running ffmpeg command: {' '.join(ffmpeg_cmd)}")
 
             process = subprocess.Popen(
                 ffmpeg_cmd,
