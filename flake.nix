@@ -137,6 +137,10 @@
           # Go web field player binary wrapper
           webFieldPlayer = pkgs.writeScriptBin "web_field_player" ''
             #!${pkgs.bash}/bin/bash
+            # Set up GStreamer environment
+            export GST_PLUGIN_PATH=${pkgs.gst_all_1.gstreamer}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-base}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-good}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-bad}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-ugly}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-libav}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-vaapi}/lib/gstreamer-1.0
+            export GST_PLUGIN_SYSTEM_PATH=${pkgs.gst_all_1.gstreamer}/lib/gstreamer-1.0
+            export GST_REGISTRY_FORK=no
             ${webFieldPlayerGo}/bin/fieldstation42 "$@"
           '';
         in
@@ -192,6 +196,15 @@
               expat
               mpdecimal
               tzdata
+
+              # GStreamer for video streaming
+              gst_all_1.gstreamer
+              gst_all_1.gst-plugins-base
+              gst_all_1.gst-plugins-good
+              gst_all_1.gst-plugins-bad
+              gst_all_1.gst-plugins-ugly
+              gst_all_1.gst-libav
+              gst_all_1.gst-vaapi
             ];
 
             shellHook = ''
@@ -199,6 +212,11 @@
               export PYTHONPATH=$PWD:$PYTHONPATH
               export TCL_LIBRARY=${pkgs.tcl}/lib/tcl8.6
               export TK_LIBRARY=${pkgs.tk}/lib/tk8.6
+              
+              # GStreamer environment variables
+              export GST_PLUGIN_PATH=${pkgs.gst_all_1.gstreamer}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-base}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-good}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-bad}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-ugly}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-libav}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-vaapi}/lib/gstreamer-1.0
+              export GST_PLUGIN_SYSTEM_PATH=${pkgs.gst_all_1.gstreamer}/lib/gstreamer-1.0
+              export GST_REGISTRY_FORK=no
             '';
           };
         };
