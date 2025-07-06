@@ -1069,6 +1069,7 @@ func NewWebStationPlayer(stationConfig *StationConfig, logger *log.Logger) *WebS
 }
 
 func (p *WebStationPlayer) shutdown() {
+	p.logger.Printf("Shutting down player for station: %s", p.stationConfig.NetworkName)
 	p.currentPlayingFilePath = ""
 	p.currentStreamURL = ""
 	if p.currentProcess != nil {
@@ -1327,8 +1328,22 @@ func mainLoop(webPlayer *WebFieldPlayer, logger *log.Logger) {
 			logger.Printf("Web interface requested channel change from %d to %d", channelIndex, webPlayer.currentChannelIndex)
 			channelIndex = webPlayer.currentChannelIndex
 			channelConf = webPlayer.manager.Stations[channelIndex]
+
+			// Shutdown the old player to clean up state
+			if webPlayer.player != nil {
+				webPlayer.player.shutdown()
+			}
+
+			// Create a new player with the new station configuration
 			webPlayer.player = NewWebStationPlayer(&webPlayer.manager.Stations[channelIndex], logger)
 			player = webPlayer.player
+
+			// Reset the outcome to force a fresh start
+			outcome = &PlayerOutcome{Status: PlayStatusSuccess}
+			skipPlay = false
+			stuckTimer = 0
+
+			logger.Printf("Switched to channel: %s (type: %s)", channelConf.NetworkName, channelConf.NetworkType)
 			continue
 		}
 
