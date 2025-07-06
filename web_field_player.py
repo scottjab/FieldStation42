@@ -25,6 +25,7 @@ from fs42.station_player import (
     update_status_socket,
 )
 from fs42.reception import ReceptionStatus
+from fs42.liquid_manager import LiquidManager, PlayPoint, ScheduleNotFound, ScheduleQueryNotInBounds
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s:%(name)s:%(message)s", level=logging.INFO
@@ -123,6 +124,85 @@ class WebStationPlayer:
         
     def get_current_stream_url(self):
         return self.current_stream_url
+
+    def schedule_panic(self, network_name):
+        self._l.critical("*********************Schedule Panic*********************")
+        self._l.critical(f"Schedule not found for {network_name} - attempting to generate a one-day extention")
+        from fs42.liquid_schedule import LiquidSchedule
+        schedule = LiquidSchedule(StationManager().station_by_name(network_name))
+        schedule.add_days(1)
+        self._l.warning(f"Schedule extended for {network_name} - reloading schedules now")
+        LiquidManager().reload_schedules()
+
+    def play_slot(self, network_name, when):
+        liquid = LiquidManager()
+        try:
+            play_point = liquid.get_play_point(network_name, when)
+        except (ScheduleNotFound, ScheduleQueryNotInBounds):
+            self.schedule_panic(network_name)
+            self._l.warning(f"Schedules reloaded - retrying play for: {network_name}")
+            # fail so we can return and try again
+            return PlayerOutcome(PlayStatus.FAILED)
+
+        if play_point is None:
+            self.current_playing_file_path = None
+            return PlayerOutcome(PlayStatus.FAILED)
+        return self._play_from_point(play_point)
+
+    # returns true if play is interrupted
+    def _play_from_point(self, play_point: PlayPoint):
+        if len(play_point.plan):
+            initial_skip = play_point.offset
+
+            # iterate over the slice from index to end
+            for entry in play_point.plan[play_point.index :]:
+                self._l.info(f"Playing entry {entry}")
+                self._l.info(f"Initial Skip: {initial_skip}")
+                total_skip = entry.skip + initial_skip
+
+                is_stream = False
+
+                if hasattr(entry, "is_stream"):
+                    is_stream = entry.is_stream
+
+                self.play_file(entry.path, file_duration=entry.duration, current_time=total_skip, is_stream=is_stream)
+
+                self._l.info(f"Seeking for: {total_skip}")
+
+                if entry.duration:
+                    self._l.info(f"Monitoring for: {entry.duration - initial_skip}")
+
+                    # this is our main event loop
+                    keep_waiting = True
+                    stop_time = datetime.datetime.now() + datetime.timedelta(seconds=entry.duration - initial_skip)
+                    while keep_waiting:
+                        if not self.skip_reception_check:
+                            self.update_reception()
+                        else:
+                            if self.scrambler:
+                                # Web player doesn't apply filters directly
+                                pass
+                                
+                        now = datetime.datetime.now()
+
+                        if now >= stop_time:
+                            keep_waiting = False
+                        else:
+                            # debounce time
+                            time.sleep(0.05)
+                            response = check_channel_socket()
+                            if response:
+                                return response
+                else:
+                    return PlayerOutcome(PlayStatus.FAILED)
+
+                initial_skip = 0
+
+            self._l.info("Done playing block")
+            return PlayerOutcome(PlayStatus.SUCCESS)
+        else:
+            self.current_playing_file_path = None
+            return PlayerOutcome(PlayStatus.FAILED, "Failure getting index...")
 
 
 class WebFieldPlayer:
@@ -532,14 +612,10 @@ def main_loop(transition_fn, host="0.0.0.0", port=9191):
                 f"Starting station {channel_conf['network_name']} at: {week_day} {hour} skipping={skip} "
             )
 
-            # For web player, we'll just update the status and let the web interface handle the video
-            if "streams" in channel_conf and channel_conf["streams"]:
-                # Use the first stream URL
-                stream_url = channel_conf["streams"][0]["url"]
-                player.play_file(stream_url, is_stream=True)
-                outcome = PlayerOutcome(PlayStatus.SUCCESS)
-            else:
-                outcome = PlayerOutcome(PlayStatus.FAILED)
+            # Use the same scheduling logic as the original player
+            outcome = player.play_slot(
+                channel_conf["network_name"], datetime.datetime.now()
+            )
 
         logger.debug(f"Got player outcome:{outcome.status}")
 
@@ -722,4 +798,4 @@ if __name__ == "__main__":
             trans_fn = none_change_effect
         # else keep short change as default
 
-    main_loop(trans_fn) 
+    main_loop(trans_fn, host=args.host, port=args.port) 
