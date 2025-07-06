@@ -111,12 +111,11 @@
           );
 
           # Build the Go web field player binary
-          webFieldPlayerGo = pkgs.buildGoApplication {
+          webFieldPlayerGo = pkgs.buildGoModule {
             pname = "web-field-player";
             version = "1.0.0";
             src = self;
-            go = pkgs.go;
-            modules = ./go.mod;
+            vendorHash = null; # Disable vendoring
             doCheck = false;
           };
 
