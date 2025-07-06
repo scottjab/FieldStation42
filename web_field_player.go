@@ -533,27 +533,21 @@ func (w *WebFieldPlayer) handleChannelDown(resp http.ResponseWriter, req *http.R
 }
 
 func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Request) {
-	w.logger.Printf("Live stream request from %s", req.RemoteAddr)
-
 	if w.player == nil {
-		w.logger.Println("No player available")
 		http.Error(resp, "No content currently playing", http.StatusNotFound)
 		return
 	}
 
 	streamURL := w.player.getCurrentStreamURL()
-	w.logger.Printf("Current stream URL: %s", streamURL)
 
-	if streamURL != "" {
+	if streamURL != "" && streamURL != "/live" {
 		// Redirect to the stream URL
-		w.logger.Printf("Redirecting to stream URL: %s", streamURL)
 		http.Redirect(resp, req, streamURL, http.StatusTemporaryRedirect)
 		return
 	}
 
 	// Fallback to file-based streaming
 	if w.player.currentPlayingFilePath == "" {
-		w.logger.Println("No stream URL or file path available")
 		http.Error(resp, "No content currently playing", http.StatusNotFound)
 		return
 	}
@@ -562,7 +556,6 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 
 	// If it's a placeholder, generate a simple video
 	if filePath == "placeholder" {
-		w.logger.Println("Generating placeholder video for standard channel")
 
 		stationName := "Unknown"
 		if w.player.stationConfig != nil {
@@ -588,8 +581,6 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 			"-loglevel", "error",
 			"pipe:1",
 		}
-
-		w.logger.Printf("Running placeholder ffmpeg command: %s", strings.Join(ffmpegCmd, " "))
 
 		cmd := exec.Command(ffmpegCmd[0], ffmpegCmd[1:]...)
 		cmd.Stderr = os.Stderr
@@ -718,8 +709,6 @@ func (w *WebFieldPlayer) handleGuide(resp http.ResponseWriter, req *http.Request
 }
 
 func (w *WebFieldPlayer) handleGuideStream(resp http.ResponseWriter, req *http.Request) {
-	w.logger.Println("Generating guide video stream")
-
 	currentTime := time.Now().Format("15:04:05")
 	ffmpegCmd := []string{
 		"ffmpeg",
@@ -740,8 +729,6 @@ func (w *WebFieldPlayer) handleGuideStream(resp http.ResponseWriter, req *http.R
 		"-loglevel", "error",
 		"pipe:1",
 	}
-
-	w.logger.Printf("Running guide ffmpeg command: %s", strings.Join(ffmpegCmd, " "))
 
 	cmd := exec.Command(ffmpegCmd[0], ffmpegCmd[1:]...)
 	cmd.Stderr = os.Stderr
@@ -1168,16 +1155,9 @@ func (p *WebStationPlayer) getCurrentStreamURL() string {
 }
 
 func (p *WebStationPlayer) showGuide(guideConfig *StationConfig) *PlayerOutcome {
-	p.logger.Println("Starting guide channel for web player")
-
 	// Set up guide video stream
 	p.currentStreamURL = "/guide_stream"
 	p.currentPlayingFilePath = "guide_stream"
-	p.logger.Printf("Guide stream URL set to: %s", p.currentStreamURL)
-
-	// For web player, we don't need to run the infinite loop here
-	// The guide content will be served via the /guide_stream endpoint
-	// Just return success to continue the main loop
 	return &PlayerOutcome{Status: PlayStatusSuccess}
 }
 
@@ -1190,15 +1170,9 @@ func (p *WebStationPlayer) schedulePanic(networkName string) {
 }
 
 func (p *WebStationPlayer) playSlot(networkName string, when time.Time) *PlayerOutcome {
-	p.logger.Printf("playSlot called for %s at %v", networkName, when)
-
-	// For now, simulate playing content for a reasonable duration
-	// In a real implementation, this would use the liquid manager to get actual content
-
 	// Set up a placeholder stream URL for standard channels
 	p.currentStreamURL = "/live"
 	p.currentPlayingFilePath = "placeholder"
-	p.logger.Printf("Set up placeholder content for %s", networkName)
 
 	// Simulate playing for 30 seconds before checking for channel changes
 	// This prevents the infinite loop
@@ -1207,7 +1181,6 @@ func (p *WebStationPlayer) playSlot(networkName string, when time.Time) *PlayerO
 	// Check for channel change
 	response := checkChannelSocket()
 	if response != nil {
-		p.logger.Printf("Channel change detected during playSlot")
 		return response
 	}
 
@@ -1319,27 +1292,14 @@ func mainLoop(webPlayer *WebFieldPlayer, logger *log.Logger) {
 	logger.Printf("Starting main loop with channel: %s (type: %s)", channelConf.NetworkName, channelConf.NetworkType)
 
 	for webPlayer.running {
-		logger.Printf("Playing station: %s", channelConf.NetworkName)
-
 		if channelConf.NetworkType == "guide" && !skipPlay {
-			logger.Println("Starting the guide channel")
+			logger.Printf("Starting guide channel: %s", channelConf.NetworkName)
 			outcome = player.showGuide(&channelConf)
-			logger.Printf("Guide channel outcome: %v", outcome.Status)
-			logger.Printf("Current stream URL: %s", player.getCurrentStreamURL())
 		} else if !skipPlay {
 			now := time.Now()
-			weekDay := now.Weekday().String()
-			hour := now.Hour()
-			skip := now.Minute()*60 + now.Second()
-
-			logger.Printf("Starting station %s at: %s %d skipping=%d", channelConf.NetworkName, weekDay, hour, skip)
-
-			// Use the same scheduling logic as the original player
+			logger.Printf("Starting station: %s", channelConf.NetworkName)
 			outcome = player.playSlot(channelConf.NetworkName, now)
-			logger.Printf("Standard channel outcome: %v", outcome.Status)
 		}
-
-		logger.Printf("Got player outcome: %v", outcome.Status)
 
 		// Reset skip
 		skipPlay = false
