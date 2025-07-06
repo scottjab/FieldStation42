@@ -102,7 +102,7 @@ type WebFieldPlayer struct {
 	connectionsMutex     sync.RWMutex
 	running              bool
 	currentStreamProcess *exec.Cmd
-	streamMutex          sync.Mutex
+	hlsServer            *HLSServer
 }
 
 // Global variables
@@ -302,6 +302,9 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
+	// HLS server is initialized in NewWebFieldPlayer
+	logger.Printf("HLS streaming server ready")
+
 	// Start web server in goroutine
 	go func() {
 		logger.Printf("Starting web server on %s:%d", webPlayer.host, webPlayer.port)
@@ -420,6 +423,8 @@ func loadStationManager() (*StationManager, error) {
 }
 
 func NewWebFieldPlayer(host string, port int, manager *StationManager, logger *log.Logger) *WebFieldPlayer {
+	hlsServer := NewHLSServer(logger)
+
 	return &WebFieldPlayer{
 		host:                host,
 		port:                port,
@@ -429,6 +434,7 @@ func NewWebFieldPlayer(host string, port int, manager *StationManager, logger *l
 		currentChannelIndex: 0,
 		connections:         make(map[*WebSocketConn]bool),
 		running:             true,
+		hlsServer:           hlsServer,
 	}
 }
 
@@ -705,224 +711,31 @@ func (w *WebFieldPlayer) handleStream(resp http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	filePath := w.player.currentPlayingFilePath
+	// Parse the URL path to determine what to serve
+	path := req.URL.Path
+	path = strings.TrimPrefix(path, "/stream")
 
-	// Check if GStreamer is available
-	if _, err := exec.LookPath("gst-launch-1.0"); err != nil {
-		// GStreamer not available, use simple video approach
-		w.handleSimpleVideo(resp, req, filePath)
-		return
-	}
-
-	// Check if this is a request for the HLS playlist
-	if strings.HasSuffix(req.URL.Path, ".m3u8") {
-		w.handleGStreamerHLSPlaylist(resp, req, filePath)
+	// Check if this is a request for an HLS playlist
+	if strings.HasSuffix(path, ".m3u8") {
+		streamID := strings.TrimSuffix(filepath.Base(path), ".m3u8")
+		w.hlsServer.ServePlaylist(resp, req, streamID)
 		return
 	}
 
 	// Check if this is a request for an HLS segment
-	if strings.HasSuffix(req.URL.Path, ".ts") {
-		w.handleGStreamerHLSSegment(resp, req, filePath)
-		return
-	}
-
-	// Default: use simple video approach
-	w.handleSimpleVideo(resp, req, filePath)
-}
-
-func (w *WebFieldPlayer) handleGStreamerHLSPlaylist(resp http.ResponseWriter, req *http.Request, filePath string) {
-	w.logger.Printf("Generating GStreamer HLS playlist for: %s", filePath)
-
-	// Create HLS output directory
-	outputDir := "hls_output"
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		w.logger.Printf("Failed to create HLS output directory: %v", err)
-		http.Error(resp, "Failed to create output directory", http.StatusInternalServerError)
-		return
-	}
-
-	// Kill any existing GStreamer process
-	w.streamMutex.Lock()
-	if w.currentStreamProcess != nil {
-		_ = w.currentStreamProcess.Process.Kill()
-		w.currentStreamProcess = nil
-	}
-
-	// Determine the input source based on filePath
-	var inputSource string
-	switch filePath {
-	case "guide_stream":
-		inputSource = "videotestsrc pattern=ball ! video/x-raw,width=1280,height=720,framerate=30/1"
-	case "placeholder":
-		stationName := "Unknown"
-		if w.player.stationConfig != nil {
-			stationName = w.player.stationConfig.NetworkName
-		}
-		inputSource = fmt.Sprintf("videotestsrc pattern=ball ! video/x-raw,width=1280,height=720,framerate=30/1 ! videoconvert ! textoverlay text='%s' font-desc='Sans 60' valignment=center halignment=center", stationName)
-	default:
-		// Local file
-		if _, err := os.Stat(filePath); err != nil {
-			w.streamMutex.Unlock()
-			http.Error(resp, "File not found", http.StatusNotFound)
+	if strings.HasSuffix(path, ".ts") {
+		parts := strings.Split(path, "/")
+		if len(parts) >= 3 {
+			streamID := parts[1]
+			segmentName := filepath.Base(path)
+			w.hlsServer.ServeSegment(resp, req, streamID, segmentName)
 			return
 		}
-		inputSource = fmt.Sprintf("filesrc location=%s ! decodebin", filePath)
 	}
 
-	// GStreamer pipeline for HLS streaming
-	gstPipeline := fmt.Sprintf(`
-		gst-launch-1.0 -q %s ! \
-		videoconvert ! x264enc tune=zerolatency bitrate=1000 ! h264parse ! \
-		mpegtsmux ! hlssink2 location=%s/stream_%%05d.ts playlist-location=%s/playlist.m3u8 \
-		playlist-length=5 max-files=10 target-duration=2
-	`, inputSource, outputDir, outputDir)
-
-	w.logger.Printf("Starting GStreamer HLS pipeline")
-	w.currentStreamProcess = exec.Command("bash", "-c", gstPipeline)
-	w.currentStreamProcess.Stderr = os.Stderr
-
-	if err := w.currentStreamProcess.Start(); err != nil {
-		w.streamMutex.Unlock()
-		w.logger.Printf("Failed to start GStreamer: %v", err)
-		http.Error(resp, "Failed to start GStreamer", http.StatusInternalServerError)
-		return
-	}
-
-	// Wait a moment for GStreamer to start generating files
-	time.Sleep(2 * time.Second)
-
-	// Serve the playlist file
-	playlistPath := filepath.Join(outputDir, "playlist.m3u8")
-	if _, err := os.Stat(playlistPath); err != nil {
-		w.streamMutex.Unlock()
-		w.logger.Printf("HLS playlist not found: %v", err)
-		http.Error(resp, "HLS playlist not found", http.StatusInternalServerError)
-		return
-	}
-
-	resp.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-	resp.Header().Set("Cache-Control", "no-cache")
-	resp.Header().Set("Access-Control-Allow-Origin", "*")
-	http.ServeFile(resp, req, playlistPath)
-	w.streamMutex.Unlock()
-}
-
-func (w *WebFieldPlayer) handleGStreamerHLSSegment(resp http.ResponseWriter, req *http.Request, filePath string) {
-	// Extract segment filename from URL
-	segmentName := filepath.Base(req.URL.Path)
-	segmentPath := filepath.Join("hls_output", segmentName)
-
-	if _, err := os.Stat(segmentPath); err != nil {
-		w.logger.Printf("HLS segment not found: %s", segmentPath)
-		http.Error(resp, "Segment not found", http.StatusNotFound)
-		return
-	}
-
-	resp.Header().Set("Content-Type", "video/mp2t")
-	resp.Header().Set("Cache-Control", "public, max-age=3600")
-	resp.Header().Set("Access-Control-Allow-Origin", "*")
-	http.ServeFile(resp, req, segmentPath)
-}
-
-func (w *WebFieldPlayer) handleSimpleVideo(resp http.ResponseWriter, req *http.Request, filePath string) {
-	w.logger.Printf("Generating simple video for: %s", filePath)
-
-	// Create a simple video file that browsers can handle
-	videoFile := "current_video.mp4"
-
-	// Determine the input source based on filePath
-	var inputSource string
-	switch filePath {
-	case "guide_stream":
-		inputSource = "color=black:size=1280x720:rate=30:duration=30"
-	case "placeholder":
-		stationName := "Unknown"
-		if w.player.stationConfig != nil {
-			stationName = w.player.stationConfig.NetworkName
-		}
-		inputSource = fmt.Sprintf("color=black:size=1280x720:rate=30:duration=30,drawtext=text='%s':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2", stationName)
-	default:
-		// Local file
-		if _, err := os.Stat(filePath); err != nil {
-			http.Error(resp, "File not found", http.StatusNotFound)
-			return
-		}
-		inputSource = filePath
-	}
-
-	// Kill any existing process
-	w.streamMutex.Lock()
-	if w.currentStreamProcess != nil {
-		_ = w.currentStreamProcess.Process.Kill()
-		w.currentStreamProcess = nil
-	}
-
-	// Generate video file with ffmpeg
-	var ffmpegCmd []string
-	switch filePath {
-	case "guide_stream", "placeholder":
-		ffmpegCmd = []string{
-			"ffmpeg",
-			"-f", "lavfi",
-			"-i", inputSource,
-			"-c:v", "libx264",
-			"-c:a", "aac",
-			"-preset", "ultrafast",
-			"-b:v", "1000k",
-			"-b:a", "128k",
-			"-y",
-			"-loglevel", "error",
-			videoFile,
-		}
-	default:
-		ffmpegCmd = []string{
-			"ffmpeg",
-			"-i", inputSource,
-			"-c:v", "libx264",
-			"-c:a", "aac",
-			"-preset", "ultrafast",
-			"-b:v", "1000k",
-			"-b:a", "128k",
-			"-y",
-			"-loglevel", "error",
-			videoFile,
-		}
-	}
-
-	w.logger.Printf("Generating video file with ffmpeg")
-	w.currentStreamProcess = exec.Command(ffmpegCmd[0], ffmpegCmd[1:]...)
-	w.currentStreamProcess.Stderr = os.Stderr
-
-	if err := w.currentStreamProcess.Start(); err != nil {
-		w.streamMutex.Unlock()
-		w.logger.Printf("Failed to start ffmpeg: %v", err)
-		http.Error(resp, "Failed to generate video", http.StatusInternalServerError)
-		return
-	}
-
-	// Wait for the process to complete
-	if err := w.currentStreamProcess.Wait(); err != nil {
-		w.streamMutex.Unlock()
-		w.logger.Printf("ffmpeg failed: %v", err)
-		http.Error(resp, "Failed to generate video", http.StatusInternalServerError)
-		return
-	}
-
-	// Check if file was created
-	if _, err := os.Stat(videoFile); err != nil {
-		w.streamMutex.Unlock()
-		w.logger.Printf("Video file not found: %v", err)
-		http.Error(resp, "Video file not found", http.StatusInternalServerError)
-		return
-	}
-
-	// Serve the file directly
-	w.logger.Printf("Serving video file: %s", videoFile)
-	resp.Header().Set("Content-Type", "video/mp4")
-	resp.Header().Set("Cache-Control", "no-cache")
-	resp.Header().Set("Access-Control-Allow-Origin", "*")
-	http.ServeFile(resp, req, videoFile)
-	w.streamMutex.Unlock()
+	// Default: serve the HLS playlist for the current channel
+	streamID := fmt.Sprintf("channel_%d", w.currentChannelIndex)
+	w.hlsServer.ServePlaylist(resp, req, streamID)
 }
 
 func (w *WebFieldPlayer) getHTMLInterface() string {
@@ -1062,14 +875,15 @@ func (w *WebFieldPlayer) getHTMLInterface() string {
                 const response = await fetch('/api/status');
                 const status = await response.json();
                 
+                
                 document.getElementById('channelNumber').textContent = status.channel || '--';
                 document.getElementById('channelName').textContent = status.name || 'No Signal';
                 document.getElementById('showTitle').textContent = status.title || '';
                 document.getElementById('receptionBar').style.width = (status.reception_quality * 100) + '%';
                 
-                // Use the simple video streaming endpoint
+                // Use the HLS streaming endpoint
                 const video = document.getElementById('videoPlayer');
-                const streamSrc = '/stream';
+                const streamSrc = '/stream/channel_' + status.channel + '/playlist.m3u8';
                 if (video.src !== streamSrc) {
                     video.src = streamSrc;
                     video.load();
@@ -1222,6 +1036,9 @@ func (w *WebFieldPlayer) shutdown() {
 	}
 	if w.player != nil {
 		w.player.shutdown()
+	}
+	if w.hlsServer != nil {
+		w.hlsServer.Stop()
 	}
 }
 
