@@ -62,7 +62,7 @@ def convert_schedule_to_json(network_name, schedule_path, output_path):
             for entry in block.plan:
                 entry_data = {
                     "path": entry.path,
-                    "duration": entry.duration,
+                    "duration": int(entry.duration),  # Convert to int for Go compatibility
                     "skip": entry.skip,
                     "is_stream": getattr(entry, 'is_stream', False)
                 }
@@ -107,7 +107,7 @@ def convert_catalog_to_json(network_name, catalog_path, output_path):
                         entry_data = {
                             "path": entry.path,
                             "title": getattr(entry, 'title', ''),
-                            "duration": getattr(entry, 'duration', 0),
+                            "duration": int(getattr(entry, 'duration', 0)),  # Convert to int for Go compatibility
                             "tag": getattr(entry, 'tag', ''),
                             "count": getattr(entry, 'count', 0),
                             "hints": getattr(entry, 'hints', [])
