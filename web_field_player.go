@@ -539,10 +539,6 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 
 	filePath := w.player.currentPlayingFilePath
 
-	// For now, let's use a simple approach: generate a static video file and serve it
-	// This is much more reliable than real-time streaming
-	tempFile := "current_video.mp4"
-
 	// Determine the input source based on filePath
 	var inputSource string
 	switch filePath {
@@ -579,7 +575,13 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 
 	w.logger.Printf("handleLiveStream: ffmpeg will use inputSource='%s' (original filePath='%s')", inputSource, filePath)
 
-	// Generate video file
+	// Set up HTTP streaming headers
+	resp.Header().Set("Content-Type", "video/mp4")
+	resp.Header().Set("Cache-Control", "no-cache")
+	resp.Header().Set("Connection", "keep-alive")
+	resp.Header().Set("Transfer-Encoding", "chunked")
+
+	// Start FFmpeg process for real-time streaming
 	var ffmpegCmd []string
 	switch filePath {
 	case "guide_stream", "placeholder":
@@ -592,9 +594,10 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 			"-preset", "ultrafast",
 			"-b:v", "1000k",
 			"-b:a", "128k",
-			"-y",
+			"-f", "mp4",
+			"-movflags", "frag_keyframe+empty_moov",
 			"-loglevel", "error",
-			tempFile,
+			"pipe:1",
 		}
 	default:
 		ffmpegCmd = []string{
@@ -605,33 +608,55 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 			"-preset", "ultrafast",
 			"-b:v", "1000k",
 			"-b:a", "128k",
-			"-y",
+			"-f", "mp4",
+			"-movflags", "frag_keyframe+empty_moov",
 			"-loglevel", "error",
-			tempFile,
+			"pipe:1",
 		}
 	}
 
-	w.logger.Printf("Generating video file with ffmpeg")
+	w.logger.Printf("Starting real-time streaming with ffmpeg")
 	cmd := exec.Command(ffmpegCmd[0], ffmpegCmd[1:]...)
 
-	if err := cmd.Run(); err != nil {
-		w.logger.Printf("Failed to generate video: %v", err)
-		http.Error(resp, "Failed to generate video", http.StatusInternalServerError)
+	// Get stdout pipe for streaming
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		w.logger.Printf("Failed to get stdout pipe: %v", err)
+		http.Error(resp, "Failed to start streaming", http.StatusInternalServerError)
 		return
 	}
 
-	// Check if file was created
-	if _, err := os.Stat(tempFile); err != nil {
-		w.logger.Printf("Video file not found: %v", err)
-		http.Error(resp, "Video file not found", http.StatusInternalServerError)
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		w.logger.Printf("Failed to start ffmpeg: %v", err)
+		http.Error(resp, "Failed to start streaming", http.StatusInternalServerError)
 		return
 	}
 
-	// Serve the file directly
-	w.logger.Printf("Serving video file: %s", tempFile)
-	resp.Header().Set("Content-Type", "video/mp4")
-	resp.Header().Set("Cache-Control", "no-cache")
-	http.ServeFile(resp, req, tempFile)
+	// Stream the output to the HTTP response
+	buffer := make([]byte, 4096)
+	for {
+		n, err := stdout.Read(buffer)
+		if n > 0 {
+			if _, writeErr := resp.Write(buffer[:n]); writeErr != nil {
+				w.logger.Printf("Failed to write to response: %v", writeErr)
+				break
+			}
+			// Flush the response to ensure data is sent immediately
+			if flusher, ok := resp.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+		if err != nil {
+			if err != io.EOF {
+				w.logger.Printf("Error reading from ffmpeg: %v", err)
+			}
+			break
+		}
+	}
+
+	// Wait for the command to finish
+	cmd.Wait()
 }
 
 func (w *WebFieldPlayer) handleGuide(resp http.ResponseWriter, req *http.Request) {
