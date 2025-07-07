@@ -137,11 +137,22 @@
           # Go web field player binary wrapper
           webFieldPlayer = pkgs.writeScriptBin "web_field_player" ''
             #!${pkgs.bash}/bin/bash
+            # Set up Python environment for convert_schedules.py
+            export PYTHONPATH=${self}:$PYTHONPATH
+            export TCL_LIBRARY=${pkgs.tcl}/lib/tcl8.6
+            export TK_LIBRARY=${pkgs.tk}/lib/tk8.6
+            
+            # Convert schedules to JSON before starting the web player
+            echo "Converting schedules to JSON format..."
+            ${pythonEnv}/bin/python ${self}/convert_schedules.py
+            
             # Set up GStreamer environment
             export GST_PLUGIN_PATH=${pkgs.gst_all_1.gstreamer}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-base}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-good}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-bad}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-ugly}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-libav}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-vaapi}/lib/gstreamer-1.0
             export GST_PLUGIN_SYSTEM_PATH=${pkgs.gst_all_1.gstreamer}/lib/gstreamer-1.0
             export GST_REGISTRY_FORK=no
             export PATH=${pkgs.gst_all_1.gst-devtools}/bin:$PATH
+            
+            echo "Starting web field player..."
             ${webFieldPlayerGo}/bin/fieldstation42 "$@"
           '';
         in
