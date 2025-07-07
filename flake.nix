@@ -208,6 +208,16 @@
               expat
               mpdecimal
               tzdata
+              # FFmpeg with QuickSync support
+              (ffmpeg.override {
+                nvenc = true;
+                vaapi = true;
+                vdpau = true;
+                # Enable QuickSync (Intel Quick Sync Video)
+                extraOptions = {
+                  qsv = true;
+                };
+              })
 
               # GStreamer for video streaming
               gst_all_1.gstreamer

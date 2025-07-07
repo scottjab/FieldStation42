@@ -587,7 +587,7 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 			"ffmpeg",
 			"-f", "lavfi",
 			"-i", inputSource,
-			"-c:v", "libx264",
+			"-c:v", "h264_qsv",
 			"-c:a", "aac",
 			"-preset", "ultrafast",
 			"-b:v", "1000k",
@@ -600,7 +600,7 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 		ffmpegCmd = []string{
 			"ffmpeg",
 			"-i", inputSource,
-			"-c:v", "libx264",
+			"-c:v", "h264_qsv",
 			"-c:a", "aac",
 			"-preset", "ultrafast",
 			"-b:v", "1000k",
@@ -654,7 +654,7 @@ func (w *WebFieldPlayer) handleTestVideo(resp http.ResponseWriter, req *http.Req
 		"-f", "lavfi",
 		"-i", "testsrc=duration=10:size=1280x720:rate=30",
 		"-f", "mp4",
-		"-vcodec", "libx264",
+		"-vcodec", "h264_qsv",
 		"-preset", "ultrafast",
 		"-b:v", "1000k",
 		"-y",
@@ -1245,17 +1245,56 @@ func (p *WebStationPlayer) readJSONScheduleFile(jsonSchedulePath string, when ti
 
 	p.logger.Printf("Loaded %d schedule blocks from JSON", len(jsonBlocks))
 
-	// Find the block that contains the requested time
-	for _, block := range jsonBlocks {
+	// First, try to find the block that contains the requested time
+	p.logger.Printf("Searching for exact time match: %v", when)
+	for i, block := range jsonBlocks {
 		startTime := p.parseJSONDateTime(block.StartTime)
 		endTime := p.parseJSONDateTime(block.EndTime)
 
+		// Debug: log the first few blocks to see what we're checking
+		if i < 5 {
+			p.logger.Printf("Block %d: %s to %s", i, startTime.Format("2006-01-02T15:04:05"), endTime.Format("2006-01-02T15:04:05"))
+		}
+
 		if when.After(startTime) && when.Before(endTime) {
+			p.logger.Printf("Found exact time match in block %d: %s to %s", i, startTime.Format("2006-01-02T15:04:05"), endTime.Format("2006-01-02T15:04:05"))
 			return p.createPlayPointFromJSONBlock(block, when)
 		}
 	}
 
-	p.logger.Printf("No schedule block found for time %v", when)
+	// If no block found for current time, use cyclic scheduling
+	// Find a block from the same time of day but any available date
+	if len(jsonBlocks) > 0 {
+		// Get the time of day from the requested time
+		timeOfDay := when.Hour()*3600 + when.Minute()*60 + when.Second()
+		p.logger.Printf("Looking for time-of-day match: %02d:%02d:%02d (%d seconds)",
+			when.Hour(), when.Minute(), when.Second(), timeOfDay)
+
+		// Find a block that covers this time of day
+		for i, block := range jsonBlocks {
+			startTime := p.parseJSONDateTime(block.StartTime)
+			endTime := p.parseJSONDateTime(block.EndTime)
+
+			// Calculate time of day for this block
+			blockStartTimeOfDay := startTime.Hour()*3600 + startTime.Minute()*60 + startTime.Second()
+			blockEndTimeOfDay := endTime.Hour()*3600 + endTime.Minute()*60 + endTime.Second()
+
+			// Check if the requested time of day falls within this block's time range
+			if timeOfDay >= blockStartTimeOfDay && timeOfDay < blockEndTimeOfDay {
+				// Create a synthetic time for this block
+				syntheticTime := startTime.Add(time.Duration(timeOfDay-blockStartTimeOfDay) * time.Second)
+				p.logger.Printf("Using cyclic scheduling: found block %d for time of day %02d:%02d:%02d (block: %s to %s)",
+					i, when.Hour(), when.Minute(), when.Second(), startTime.Format("15:04:05"), endTime.Format("15:04:05"))
+				return p.createPlayPointFromJSONBlock(block, syntheticTime)
+			}
+		}
+
+		// If still no match, use the first block
+		p.logger.Printf("No time-of-day match found, using first available block")
+		return p.createPlayPointFromJSONBlock(jsonBlocks[0], p.parseJSONDateTime(jsonBlocks[0].StartTime))
+	}
+
+	p.logger.Printf("No schedule blocks available for time %v", when)
 	return p.getPlaceholderPlayPoint(), nil
 }
 
