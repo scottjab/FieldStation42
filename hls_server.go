@@ -61,6 +61,17 @@ func (h *HLSServer) GetOrCreateStream(streamID, inputSource string) (*HLSStream,
 	// Check if stream already exists
 	if stream, exists := h.streams[streamID]; exists && stream.Active {
 		stream.LastAccess = time.Now()
+		// Update input source if it changed
+		if stream.InputSource != inputSource {
+			h.logger.Printf("Updating input source for stream %s: %s -> %s", streamID, stream.InputSource, inputSource)
+			stream.InputSource = inputSource
+			// Restart transcoding with new input
+			go func() {
+				if err := h.startTranscoding(stream); err != nil {
+					h.logger.Printf("Failed to restart transcoding for stream %s: %v", streamID, err)
+				}
+			}()
+		}
 		return stream, nil
 	}
 
@@ -236,7 +247,6 @@ func (h *HLSServer) getInputSourceForStream(streamID string) string {
 		// Extract channel number from stream ID
 		parts := strings.Split(streamID, "_")
 		if len(parts) >= 2 {
-			// channelNum := parts[1] // Will be used in future implementation
 			// For now, return placeholder. In a real implementation,
 			// you would look up the actual content for this channel
 			return "placeholder"

@@ -762,6 +762,14 @@ func (w *WebFieldPlayer) handleStream(resp http.ResponseWriter, req *http.Reques
 	// Check if this is a request for an HLS playlist
 	if strings.HasSuffix(path, ".m3u8") {
 		streamID := strings.TrimSuffix(filepath.Base(path), ".m3u8")
+		// Get the actual input source from the current player
+		inputSource := w.getInputSourceForStream(streamID)
+		// Create or update the stream with the correct input source
+		if _, err := w.hlsServer.GetOrCreateStream(streamID, inputSource); err != nil {
+			w.logger.Printf("Failed to get/create stream %s: %v", streamID, err)
+			http.Error(resp, "Stream not available", http.StatusNotFound)
+			return
+		}
 		w.hlsServer.ServePlaylist(resp, req, streamID)
 		return
 	}
@@ -779,7 +787,58 @@ func (w *WebFieldPlayer) handleStream(resp http.ResponseWriter, req *http.Reques
 
 	// Default: serve the HLS playlist for the current channel
 	streamID := fmt.Sprintf("channel_%d", w.currentChannelIndex)
+	inputSource := w.getInputSourceForStream(streamID)
+	// Create or update the stream with the correct input source
+	if _, err := w.hlsServer.GetOrCreateStream(streamID, inputSource); err != nil {
+		w.logger.Printf("Failed to get/create stream %s: %v", streamID, err)
+		http.Error(resp, "Stream not available", http.StatusNotFound)
+		return
+	}
 	w.hlsServer.ServePlaylist(resp, req, streamID)
+}
+
+// getInputSourceForStream determines the input source for a given stream ID
+func (w *WebFieldPlayer) getInputSourceForStream(streamID string) string {
+	if w.player == nil {
+		return "placeholder"
+	}
+
+	// Parse stream ID to determine input source
+	if strings.HasPrefix(streamID, "guide") {
+		return "guide_stream"
+	} else if strings.HasPrefix(streamID, "channel_") {
+		// Use the current playing file path
+		filePath := w.player.currentPlayingFilePath
+		if filePath == "" {
+			return "placeholder"
+		}
+
+		// Determine the input source based on filePath
+		switch filePath {
+		case "guide_stream":
+			return "guide_stream"
+		case "placeholder":
+			stationName := "Unknown"
+			if w.player.stationConfig != nil {
+				stationName = w.player.stationConfig.NetworkName
+			}
+			return fmt.Sprintf("color=black:size=1280x720:rate=30:duration=30,drawtext=text='%s':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2", stationName)
+		default:
+			// Check if it's a local file path
+			if _, err := os.Stat(filePath); err != nil {
+				// Try to find the file in the station's content directory
+				if w.player.stationConfig != nil && w.player.stationConfig.ContentDir != "" {
+					contentPath := filepath.Join(w.player.stationConfig.ContentDir, filepath.Base(filePath))
+					if _, err := os.Stat(contentPath); err == nil {
+						return contentPath
+					}
+				}
+				return "placeholder"
+			}
+			return filePath
+		}
+	}
+	return "placeholder"
 }
 
 func (w *WebFieldPlayer) getHTMLInterface() string {
