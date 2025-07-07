@@ -587,7 +587,7 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 			"ffmpeg",
 			"-f", "lavfi",
 			"-i", inputSource,
-			"-c:v", "h264_qsv",
+			"-c:v", "h264",
 			"-c:a", "aac",
 			"-preset", "ultrafast",
 			"-b:v", "1000k",
@@ -600,7 +600,7 @@ func (w *WebFieldPlayer) handleLiveStream(resp http.ResponseWriter, req *http.Re
 		ffmpegCmd = []string{
 			"ffmpeg",
 			"-i", inputSource,
-			"-c:v", "h264_qsv",
+			"-c:v", "h264",
 			"-c:a", "aac",
 			"-preset", "ultrafast",
 			"-b:v", "1000k",
@@ -654,7 +654,7 @@ func (w *WebFieldPlayer) handleTestVideo(resp http.ResponseWriter, req *http.Req
 		"-f", "lavfi",
 		"-i", "testsrc=duration=10:size=1280x720:rate=30",
 		"-f", "mp4",
-		"-vcodec", "h264_qsv",
+		"-vcodec", "h264",
 		"-preset", "ultrafast",
 		"-b:v", "1000k",
 		"-y",
@@ -1326,6 +1326,11 @@ func (p *WebStationPlayer) parseJSONDateTime(jsonDT JSONDateTime) time.Time {
 		if parsed, err := time.Parse(time.RFC3339, jsonDT.Value); err == nil {
 			return parsed
 		}
+		// Try parsing without timezone info
+		if parsed, err := time.Parse("2006-01-02T15:04:05", jsonDT.Value); err == nil {
+			return parsed
+		}
+		p.logger.Printf("Failed to parse datetime: %s", jsonDT.Value)
 	}
 	// Fallback to current time
 	return time.Now().Truncate(time.Hour)
